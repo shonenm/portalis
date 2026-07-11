@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pty</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --code-bg: #161b22;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            margin: 0;
+            padding: 2rem 1rem;
+        }
+
+        .doc-container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            color: var(--accent);
+        }
+
+        h3 { font-size: 1.2rem; margin-top: 1.5rem; }
+
+        p { margin: 0.75rem 0; }
+
+        a { color: var(--accent); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            text-align: left;
+        }
+
+        th { background: var(--bg); color: var(--accent); }
+
+        ul, ol { margin: 0.75rem 0; padding-left: 1.5rem; }
+
+        li { margin: 0.25rem 0; }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background: var(--code-bg);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 0.85em;
+        }
+
+        .signature {
+            background: var(--code-bg);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+
+        .signature pre {
+            background: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .signature code {
+            background: transparent;
+            padding: 0;
+        }
+
+        footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <article class="doc-container">
+        <h1>Pty — PTY Wrapper for Go</h1>
+
+        <h2>Overview</h2>
+
+        <p>The <code>pty</code> package provides a Go wrapper around pseudoterminals (PTYs) for interacting with subprocesses in a terminal-like environment. It integrates with the <a href="https://github.com/charmbracelet/bubbletea">Bubble Tea</a> framework for reactive terminal applications.</p>
+
+        <p>The package uses:</p>
+
+        <ul>
+            <li><code>os/exec</code> for spawning child processes</li>
+            <li><a href="https://github.com/creack/pty"><code>github.com/creack/pty</code></a> for PTY handling</li>
+            <li><a href="https://github.com/charmbracelet/bubbletea"><code>github.com/charmbracelet/bubbletea</code></a> for Tea message passing</li>
+        </ul>
+
+        <h2>Types</h2>
+
+        <h3>Pty</h3>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">type</span> Pty <span class="keyword">struct</span> {
+    cmd    <span class="type">*exec.Cmd</span>
+    ptmx   <span class="type">*os.File</span>
+    reader <span class="type">*bufio.Reader</span>
+    Output <span class="type">chan</span> []<span class="type">byte</span>
+    Errors <span class="type">chan</span> error
+    done   <span class="type">chan</span> <span class="type">struct</span>{}</span>
+}</code></pre></div>
+
+        <p><strong>Fields:</strong></p>
+
+        <ul>
+            <li><code>cmd</code>: The underlying exec.Cmd for the spawned process</li>
+            <li><code>ptmx</code>: The pseudoterminal master file descriptor</li>
+            <li><code>reader</code>: Buffered reader for PTY output</li>
+            <li><code>Output</code>: Channel receiving output data chunks from the PTY</li>
+            <li><code>Errors</code>: Channel for error messages</li>
+            <li><code>done</code>: Done channel for graceful shutdown</li>
+        </ul>
+
+        <h3>PtyOutputMsg</h3>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">type</span> PtyOutputMsg <span class="keyword">struct</span> {
+    SessionID <span class="type">string</span>
+    Data      []<span class="type">byte</span>
+}</code></pre></div>
+
+        <p>Message sent when new data arrives from the PTY output channel.</p>
+
+        <h3>PtyExitMsg</h3>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">type</span> PtyExitMsg <span class="keyword">struct</span> {
+    SessionID <span class="type">string</span>
+    Err       error
+}</code></pre></div>
+
+        <p>Message sent when the PTY process exits with an error or EOF.</p>
+
+        <h2>Public API</h2>
+
+        <h3>Spawn(command string, args []string, env ...string) (*Pty, error)</h3>
+
+        <p>Starts a new PTY with the given command, arguments, and optional environment variables.</p>
+
+        <p><strong>Parameters:</strong></p>
+
+        <ul>
+            <li><code>command</code>: The command to execute</li>
+            <li><code>args</code>: Arguments for the command</li>
+            <li><code>env</code>: Additional environment variables (optional)</li>
+        </ul>
+
+        <p><strong>Returns:</strong></p>
+
+        <ul>
+            <li><code>*Pty</code>: The PTY instance for interacting with the process</li>
+            <li><code>error</code>: Error if PTY creation fails</li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go">func Spawn(command <span class="keyword">string</span>, args []<span class="type">string</span>, env ...<span class="type">string</span>) (*Pty, error)</code></pre></div>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="comment">// Example:</span>
+pty, err := Spawn(<span class="string">"ls"</span>, []<span class="type">string</span>{<span class="string">"-la"</span>}, <span class="string">"PATH=/custom/path"</span>)
+<span class="keyword">if</span> err != <span class="keyword">nil</span> {
+    <span class="comment">// handle error</span>
+}</code></pre></div>
+
+        <h3>SpawnInDir(command string, args []string, dir string, env ...string) (*Pty, error)</h3>
+
+        <p>Same as <code>Spawn</code> but allows specifying a working directory for the process.</p>
+
+        <p><strong>Parameters:</strong></p>
+
+        <ul>
+            <li><code>command</code>: The command to execute</li>
+            <li><code>args</code>: Arguments for the command</li>
+            <li><code>dir</code>: Working directory (optional)</li>
+            <li><code>env</code>: Additional environment variables (optional)</li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go">func SpawnInDir(command <span class="keyword">string</span>, args []<span class="type">string</span>, dir <span class="type">string</span>, env ...<span class="type">string</span>) (*Pty, error)</code></pre></div>
+
+        <h3>Write(data []byte) error</h3>
+
+        <p>Sends raw bytes to the PTY. This is useful for sending input to the child process, such as keystrokes or commands.</p>
+
+        <p><strong>Parameters:</strong></p>
+
+        <ul>
+            <li><code>data</code>: Byte slice to write to the PTY</li>
+        </ul>
+
+        <p><strong>Returns:</strong></p>
+
+        <ul>
+            <li><code>error</code>: Error if the PTY is closed</li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> (p <span class="type">*</span>Pty) Write(data []<span class="type">byte</span>) error</code></pre></div>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="comment">// Example:</span>
+_, _ = fmt.Fprint(pty.Output, <span class="string">"hello\n"</span>)
+fmt.Fprintf(pty, <span class="string">"echo hello\n"</span>)</code></pre></div>
+
+        <h3>Resize(rows, cols int) error</h3>
+
+        <p>Resizes the PTY and signals the child process about the change. This is used to update the terminal window size.</p>
+
+        <p><strong>Parameters:</strong></p>
+
+        <ul>
+            <li><code>rows</code>: Number of rows</li>
+            <li><code>cols</code>: Number of columns</li>
+        </ul>
+
+        <p><strong>Returns:</strong></p>
+
+        <ul>
+            <li><code>error</code>: Error if the PTY is closed or resize fails</li>
+        </ul>
+
+        <p><strong>Implementation Details:</strong></p>
+
+        <ul>
+            <li>Rate-limited to avoid rapid consecutive resize signals (50ms cooldown)</li>
+            <li>Sends <code>SYSCALL.SIGWINCH</code> to the child process to notify it of the resize</li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> (p <span class="type">*</span>Pty) Resize(rows, cols <span class="type">int</span>) error</code></pre></div>
+
+        <h3>Close() error</h3>
+
+        <p>Closes the PTY and kills the child process. This should be called when you're done with the PTY.</p>
+
+        <p><strong>Returns:</strong></p>
+
+        <ul>
+            <li><code>error</code>: Error if closing fails</li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> (p <span class="type">*</span>Pty) Close() error</code></pre></div>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="comment">// Example:</span>
+defer pty.Close()</code></pre></div>
+
+        <h3>SendBytes(p *Pty, data []byte) tea.Cmd</h3>
+
+        <p>Creates a Bubble Tea command that sends raw bytes to the PTY. This is useful for integrating PTY input with Bubble Tea's message loop.</p>
+
+        <p><strong>Parameters:</strong></p>
+
+        <ul>
+            <li><code>p</code>: The PTY instance</li>
+            <li><code>data</code>: Bytes to send to the PTY</li>
+        </ul>
+
+        <p><strong>Returns:</strong></p>
+
+        <ul>
+            <li><code>tea.Cmd</code>: A command that writes to the PTY</li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> SendBytes(p <span class="type">*</span>Pty, data []<span class="type">byte</span>) tea.Cmd</code></pre></div>
+
+        <h3>Listen(sessionID string) tea.Cmd</h3>
+
+        <p>Returns a Bubble Tea command that waits for the next chunk of PTY output or an error. This is used to integrate PTY output with Bubble Tea's message passing system.</p>
+
+        <p><strong>Parameters:</strong></p>
+
+        <ul>
+            <li><code>sessionID</code>: Session ID to associate the message with</li>
+        </ul>
+
+        <p><strong>Returns:</strong></p>
+
+        <ul>
+            <li><code>tea.Cmd</code>: A command that returns either <code>PtyOutputMsg</code> or <code>PtyExitMsg</code></li>
+        </ul>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> (p <span class="type">*</span>Pty) Listen(sessionID <span class="type">string</span>) tea.Cmd</code></pre></div>
+
+        <h2>Internal Implementation</h2>
+
+        <h3>readLoop</h3>
+
+        <p>A goroutine that continuously reads from the PTY's file descriptor and forwards output to the <code>Output</code> channel or errors to the <code>Errors</code> channel.</p>
+
+        <p><strong>Behavior:</strong></p>
+
+        <ul>
+            <li>Reads 4KB buffers from the PTY</li>
+            <li>Handles terminal escape sequences:
+                <ul>
+                    <li><code>\x1b[6n</code> (SR - cursor position report): Sends <code>\x1b[1;1R</code> (RIS - reset)</li>
+                    <li><code>\x1b[5n</code> (PR - paste report): Sends <code>\x1b[0n</code> (ESC)</li>
+                </ul>
+            </li>
+            <li>Forwards data to the Output channel</li>
+            <li>Forwards errors (excluding EOF) to the Errors channel</li>
+            <li>Respects the done channel for graceful shutdown</li>
+        </ul>
+
+        <h3>debugLog</h3>
+
+        <p>A no-op logging function (disabled) for potential future debugging.</p>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> debugLog(format <span class="type">string</span>, args ...<span class="type">interface</span>{})</code></pre></div>
+
+        <h2>Usage Examples</h2>
+
+        <h3>Basic PTY Usage</h3>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">package</span> main
+
+<span class="keyword">import</span> (
+    <span class="string">"fmt"</span>
+    <span class="string">"os"</span>
+    portalis <span class="string">"path/to/portalis"</span>
+)</code></pre></div>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">func</span> main() {
+    pty, err := portalis.Spawn(<span class="string">"bash"</span>, []<span class="type">string</span>{})
+    <span class="keyword">if</span> err != <span class="keyword">nil</span> {
+        fmt.Println(<span class="string">"Failed to spawn PTY:"</span>, err)
+        <span class="keyword">return</span>
+    }
+    <span class="keyword">defer</span> pty.Close()
+
+    <span class="comment">// Send a command</span>
+    _, _ = fmt.Fprint(pty.Output, <span class="string">"echo hello\n"</span>)
+
+    <span class="comment">// Read output</span>
+    <span class="keyword">for</span> {
+        select {
+        <span class="keyword">case</span> data := <span class="keyword">=&gt;</span> pty.Output:
+            fmt.Println(<span class="string">"Output:"</span>, <span class="keyword">string</span>(data))
+        <span class="keyword">case</span> err := <span class="keyword">=&gt;</span> pty.Errors:
+            fmt.Println(<span class="string">"Error:"</span>, err)
+        }
+    }
+}</code></pre></div>
+
+        <h3>Bubble Tea Integration</h3>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">package</span> main
+
+<span class="keyword">import</span> (
+    <span class="string">"fmt"</span>
+    portalis <span class="string">"path/to/portalis"</span>
+    tea <span class="string">"github.com/charmbracelet/bubbletea"</span>
+)</code></pre></div>
+
+        <div class="signature">
+<pre><code class="language-go"><span class="keyword">type</span> model <span class="keyword">struct</span> {
+    pty    <span class="type">*pty.Pty</span>
+    output []<span class="type">byte</span>
+    error  error
+}
+
+<span class="keyword">func</span> (m model) Init() tea.Cmd {
+    <span class="keyword">return</span> func() tea.Msg {
+        <span class="keyword">return</span> portalis.Listen(<span class="string">"session-1"</span>)
+    }
+}
+
+<span class="keyword">func</span> (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    <span class="keyword">switch</span> msg := msg.(<span class="type">interface</span>){
+    <span class="keyword">case</span> portalis.PtyOutputMsg:
+        m.output = <span class="keyword">append</span>(m.output, msg.Data)
+        <span class="keyword">return</span> m, <span class="keyword">nil</span>
+
+    <span class="keyword">case</span> portalis.PtyExitMsg:
+        m.error = msg.Err
+        <span class="keyword">return</span> m, <span class="keyword">nil</span>
+
+    <span class="keyword">case</span> tea.KeyEnter:
+        <span class="keyword">if</span> m.pty != <span class="keyword">nil</span> {
+            <span class="keyword">return</span> m, portalis.SendBytes(m.pty, []<span class="type">byte</span>(<span class="string">"\n"</span>))
+        }
+    <span class="keyword">case</span> tea.KeyCtrlC:
+        <span class="keyword">return</span> tea.Quit(), <span class="keyword">nil</span>
+    }
+    <span class="keyword">return</span> m, <span class="keyword">nil</span>
+}
+
+<span class="keyword">func</span> (m model) View() <span class="type">string</span> {
+    <span class="keyword">if</span> m.error != <span class="keyword">nil</span> {
+        <span class="keyword">return</span> <span class="string">"Error: "</span> + m.error.Error()
+    }
+    <span class="keyword">return</span> <span class="string">"Output: "</span> + <span class="keyword">string</span>(m.output)</span>
+}</code></pre></div>
+
+        <h2>Important Notes</h2>
+
+        <ul>
+            <li><strong>Always call Close():</strong> Make sure to close the PTY when done to free resources</li>
+            <li><strong>Handle errors:</strong> Check the Errors channel for process termination signals</li>
+            <li><strong>Environment variables:</strong> Use SpawnInDir with env parameters to set custom environment</li>
+            <li><strong>Resize handling:</strong> The Resize method is rate-limited to prevent rapid consecutive resize signals</li>
+            <li><strong>Terminal escape sequences:</strong> The readLoop handles certain escape sequences and responds appropriately</li>
+        </ul>
+
+        <h2>Dependencies</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Package</th>
+                    <th>Purpose</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>github.com/creack/pty</code></td>
+                    <td>PTY handling on Unix-like systems</td>
+                </tr>
+                <tr>
+                    <td><code>github.com/charmbracelet/bubbletea</code></td>
+                    <td>Bubble Tea framework for terminal applications</td>
+                </tr>
+                <tr>
+                    <td><code>os/exec</code></td>
+                    <td>Process spawning and management</td>
+                </tr>
+                <tr>
+                    <td><code>bufio</code></td>
+                    <td>Buffered I/O reading</td>
+                </tr>
+            </tbody>
+        </table>
+        <footer>Generated by code-check</footer>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/rust.min.js"></script>
+    <script>
+document.querySelectorAll('.signature code').forEach(el => hljs.highlightElement(el));
+hljs.highlightAll();
+</script>
+</body>
+</html>

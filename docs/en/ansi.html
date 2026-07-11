@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ansi</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --code-bg: #161b22;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            margin: 0;
+            padding: 2rem 1rem;
+        }
+
+        .doc-container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            color: var(--accent);
+        }
+
+        h3 { font-size: 1.2rem; margin-top: 1.5rem; }
+
+        p { margin: 0.75rem 0; }
+
+        a { color: var(--accent); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            text-align: left;
+        }
+
+        th { background: var(--bg); color: var(--accent); }
+
+        ul, ol { margin: 0.75rem 0; padding-left: 1.5rem; }
+
+        li { margin: 0.25rem 0; }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background: var(--code-bg);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 0.85em;
+        }
+
+        .signature {
+            background: var(--code-bg);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+
+        .signature pre {
+            background: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .signature code {
+            background: transparent;
+            padding: 0;
+        }
+
+        footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <article class="doc-container">
+        <h1>ANSI Parser</h1>
+        
+        <p>The <code>ansi</code> package provides a state machine-based parser for ANSI escape sequences. It processes terminal input and updates a <code>Screen</code> object accordingly, handling text rendering, cursor movement, screen clearing, color sequences, and OSC (Operating System Commands).</p>
+
+        <h2>Module Overview</h2>
+
+        <p>This parser implements a character-by-character state machine to decode ANSI escape sequences. The parser maintains internal state to handle:</p>
+
+        <ul>
+            <li><strong>Normal mode:</strong> Rendering regular characters, handling line endings, tabs, backspaces</li>
+            <li><strong>Escape mode:</strong> Detected when encountering ESC (0x1b), awaiting CSI/OSC prefix</li>
+            <li><strong>CSI (Control Sequence Introducer) mode:</strong> Parsing control sequences like cursor movement, screen clearing, SGR (Select Graphic Rendition)</li>
+            <li><strong>OSC (Operating System Command) mode:</strong> Handling OSC sequences including directory change notifications (OSC 7)</li>
+            <li><strong>Paste mode:</strong> Handling bracketed paste sequences (CSI 200~ to CSI 201~)</li>
+        </ul>
+
+        <h2>Parser Type</h2>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">type</span> <span class="type">Parser</span> <span class="keyword">struct</span> {
+    screen    <span class="operator">*</span>Screen
+    state     ansiState
+    buf       <span class="type">strings</span>.<span class="type">Builder</span>
+    utf8Buf   <span class="operator">[]</span><span class="type">byte</span>
+    onCWD     <span class="operator">func</span>(<span class="type">string</span>)
+    lastCWD   <span class="type">string</span>
+}</span></code></pre>
+        </div>
+
+        <p>The <code>Parser</code> struct maintains:</p>
+
+        <ul>
+            <li><code>screen</code> - Reference to the Screen object being updated</li>
+            <li><code>state</code> - Current parsing state (Normal, Escape, CSI, OSC, Paste)</li>
+            <li><code>buf</code> - Buffer for accumulating CSI/OSC sequence bytes</li>
+            <li><code>utf8Buf</code> - Buffer for accumulating incomplete UTF-8 sequences</li>
+            <li><code>onCWD</code> - Optional callback for working directory changes</li>
+            <li><code>lastCWD</code> - Last known working directory from OSC 7</li>
+        </ul>
+
+        <h2>Public API</h2>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">NewParser</span>(screen <span class="operator">*</span>Screen) <span class="operator">*</span>Parser</code></pre>
+        </div>
+
+        <p>Creates a new ANSI parser for the given screen. This is the main entry point for creating a parser instance.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">Feed</span>(data <span class="operator">[]</span><span class="type">byte</span>)</code></pre>
+        </div>
+
+        <p>Feeds raw bytes into the parser. The parser processes each byte according to the current state machine. This method is the primary way to provide input to the parser.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">SetCWDCallback</span>(fn <span class="operator">func</span>(<span class="type">string</span>))</code></pre>
+        </div>
+
+        <p>Sets a callback function that will be invoked when the working directory changes (detected via OSC 7 sequences). The callback receives the new directory path as a string.</p>
+
+        <h2>State Machine</h2>
+
+        <p>The parser uses a finite state machine with the following states:</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>State</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>stateNormal</code></td>
+                    <td>Normal text rendering mode. Handles printable characters, line endings, tabs, backspaces.</td>
+                </tr>
+                <tr>
+                    <td><code>stateEscape</code></td>
+                    <td>Encountered ESC (0x1b). Awaiting CSI ([), OSC (]), or returning to normal.</td>
+                </tr>
+                <tr>
+                    <td><code>stateCSI</code></td>
+                    <td>CSI sequence mode. Accumulating bytes until final byte (0x40-0x7e).</td>
+                </tr>
+                <tr>
+                    <td><code>stateOSC</code></td>
+                    <td>OSC sequence mode. Accumulating bytes until BEL (0x07) or ESC \.</td>
+                </tr>
+                <tr>
+                    <td><code>statePaste</code></td>
+                    <td>Bracketed paste mode. Characters are rendered literally until ESC [201~.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Key CSI Sequences</h2>
+
+        <p>The parser handles various CSI (Control Sequence Introducer) sequences:</p>
+
+        <h3>SGR (Select Graphic Rendition) - CSI m</h3>
+
+        <p>Handles text styling and colors:</p>
+
+        <ul>
+            <li><code>0</code> - Reset all attributes</li>
+            <li><code>1</code> - Bold</li>
+            <li><code>2</code> - Dim</li>
+            <li><code>3</code> - Italic</li>
+            <li><code>4</code> - Underline</li>
+            <li><code>5</code> - Blink</li>
+            <li><code>7</code> - Reverse</li>
+            <li><code>8</code> - Hidden</li>
+            <li><code>9</code> - Strikethrough</li>
+            <li><code>22-29</code> - Reset corresponding attributes</li>
+            <li><code>30-37</code>, <code>90-97</code> - Foreground colors (ANSI 8-bit and 16 colors)</li>
+            <li><code>38;5;N</code> - 256-color foreground</li>
+            <li><code>38;2;R;G;B</code> - Truecolor foreground</li>
+            <li><code>40-47</code>, <code>100-107</code> - Background colors</li>
+            <li><code>48;5;N</code> - 256-color background</li>
+            <li><code>48;2;R;G;B</code> - Truecolor background</li>
+        </ul>
+
+        <h3>Cursor Movement - CSI A/B/C/D/E/F/G/H</h3>
+
+        <ul>
+            <li><code>A</code> - Cursor up</li>
+            <li><code>B</code> - Cursor down</li>
+            <li><code>C</code> - Cursor forward</li>
+            <li><code>D</code> - Cursor backward</li>
+            <li><code>E</code> - Cursor down and to first column</li>
+            <li><code>F</code> - Cursor up and to first column</li>
+            <li><code>G</code> - Cursor to column N (1-indexed)</li>
+        </ul>
+
+        <h3>Screen Operations - CSI J/K</h3>
+
+        <ul>
+            <li><code>J 0</code> - Clear from cursor to end of screen</li>
+            <li><code>J 1</code> - Clear from cursor to beginning</li>
+            <li><code>J 2</code> - Clear entire screen, move cursor to (0,0)</li>
+            <li><code>K 0</code> - Clear from cursor to end of line</li>
+            <li><code>K 1</code> - Clear from beginning of line to cursor</li>
+            <li><code>K 2</code> - Clear entire line</li>
+        </ul>
+
+        <h3>Scrolling - CSI M</h3>
+
+        <ul>
+            <li><code>M</code> - Reverse line feed / scroll down</li>
+        </ul>
+
+        <h3>Scroll Region - CSI r</h3>
+
+        <ul>
+            <li><code>r</code> - Set scroll region (top, bottom rows)</li>
+        </ul>
+
+        <h3>Private Modes - CSI ?h/l</h3>
+
+        <ul>
+            <li><code>?1049h/l</code> - Alternate screen buffer (DECALTS/DECRALT)</li>
+            <li><code>?2026h/l</code> - Synchronized output modes</li>
+        </ul>
+
+        <h2>OSC Sequences</h2>
+
+        <p>The parser handles OSC (Operating System Command) sequences, specifically:</p>
+
+        <ul>
+            <li><strong>OSC 7</strong> - Working directory change notification. The payload format is typically <code>file://hostname/path</code> or <code>/absolute/path</code>. The <code>extractOSC7Path</code> function normalizes these to absolute paths.</li>
+        </ul>
+
+        <h2>Helper Functions</h2>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">utf8Valid</span>(buf <span class="operator">[]</span><span class="type">byte</span>) <span class="type">bool</span></code></pre>
+        </div>
+
+        <p>Checks if a byte slice contains a complete, valid UTF-8 sequence using <code>utf8.FullRune</code> and <code>utf8.Valid</code>.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">parseParams</span>(s <span class="type">string</span>) <span class="operator">[]</span><span class="type">int</span></code></pre>
+        </div>
+
+        <p>Parses CSI/OSC parameter strings separated by semicolons into a slice of integers. Empty segments are treated as 0. Invalid numbers default to 0.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">ansi256Color</span>(n <span class="type">int</span>) <span class="type">lipgloss</span>.<span class="type">Color</span></code></pre>
+        </div>
+
+        <p>Converts an 8-bit ANSI color number to a <code>lipgloss.Color</code>. Handles:</p>
+
+        <ul>
+            <li>Indices 0-15: Standard 16 colors</li>
+            <li>Indices 16-231: 6x6x6 color cube (216 colors)</li>
+            <li>Indices 232-255: Grayscale</li>
+        </ul>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">rgb</span>(r, g, b <span class="type">int</span>) <span class="type">string</span></code></pre>
+        </div>
+
+        <p>Converts RGB values to a hex color string prefixed with <code>#</code>.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">hexByte</span>(v <span class="type">int</span>) <span class="type">string</span></code></pre>
+        </div>
+
+        <p>Converts a byte value to a lowercase hexadecimal string, zero-padding if necessary.</p>
+
+        <h2>Internal Functions</h2>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">feedByte</span>(b <span class="type">byte</span>)</code></pre>
+        </div>
+
+        <p>Private method that processes a single byte. This is the core of the parser, called from <code>Feed</code> for each byte in the input.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">flushUtf8</span>()</code></pre>
+        </div>
+
+        <p>Flushes any incomplete UTF-8 sequence by emitting replacement characters (<code>\ufffd</code>). This is called when a character is interrupted by control characters.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">clearFromCursor</span>()</code></pre>
+        </div>
+
+        <p>Clears all cells from the current cursor position to the end of the screen.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">handleSGR</span>(params <span class="operator">[]</span><span class="type">int</span>)</code></pre>
+        </div>
+
+        <p>Processes SGR (Select Graphic Rendition) sequences, applying text styling and color attributes to the cursor.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">handleCSI</span>(seq <span class="type">string</span>)</code></pre>
+        </div>
+
+        <p>Handles CSI control sequences after the final byte is received. Extracts parameters and final byte to determine the action.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> (p <span class="operator">*</span>Parser) <span class="type">handleOSC</span>(payload <span class="type">string</span>)</code></pre>
+        </div>
+
+        <p>Handles OSC (Operating System Command) sequences, specifically OSC 7 for working directory changes.</p>
+
+        <div class="signature">
+            <pre><code class="language-typescript"><span class="keyword">func</span> <span class="type">extractOSC7Path</span>(s <span class="type">string</span>) <span class="type">string</span></code></pre>
+        </div>
+
+        <p>Extracts an absolute filesystem path from an OSC 7 payload. Handles both <code>file://hostname/path</code> and <code>/absolute/path</code> formats.</p>
+
+        <h2>Implementation Details</h2>
+
+        <h3>UTF-8 Handling</h3>
+
+        <p>The parser accumulates bytes in <code>utf8Buf</code> while processing UTF-8 multi-byte sequences. When a complete valid sequence is formed, it is decoded and rendered. If a control character arrives while collecting a UTF-8 sequence, the incomplete bytes are flushed as replacement characters.</p>
+
+        <h3>State Transitions</h3>
+
+        <ul>
+            <li><code>stateNormal → stateEscape</code> on ESC (0x1b)</li>
+            <li><code>stateEscape → stateCSI</code> on [</li>
+            <li><code>stateEscape → stateOSC</code> on ]</li>
+            <li><code>stateEscape → stateNormal</code> on unknown escape</li>
+            <li><code>stateCSI → stateNormal</code> on final byte (0x40-0x7e)</li>
+            <li><code>stateOSC → stateNormal</code> on BEL (0x07) or ESC \</li>
+            <li><code>stateNormal → statePaste</code> on CSI 200~</li>
+            <li><code>statePaste → stateNormal</code> on CSI 201~</li>
+        </ul>
+
+        <h3>Line Ending Handling</h3>
+
+        <p>The parser handles different line ending styles:</p>
+
+        <ul>
+            <li><code>\r</code> (CR): Resets column to 0</li>
+            <li><code>\n</code> (LF): Increments row; if <code>wrapPending</code> is true, also resets column and clears pending wrap</li>
+            <li><code>\r\n</code> (CRLF): Handled via the pending wrap flag</li>
+        </ul>
+
+        <h3>Tab Handling</h3>
+
+        <p>Tab characters move the cursor to the next tab stop, calculated as <code>(col/8 + 1) * 8</code>, but never beyond the screen width.</p>
+
+        <h3>Backspace Handling</h3>
+
+        <p>The backspace character (0x08) decrements the cursor column. This is a simplified implementation that does not support multi-byte character backspacing.</p>
+
+        <h3>Color Format Support</h3>
+
+        <p>The parser supports multiple color formats through SGR code 38 and 48:</p>
+
+        <ul>
+            <li><code>38;5;N</code> - 8-bit ANSI color (N from 0-255)</li>
+            <li><code>38;2;R;G;B</code> - Truecolor (24-bit RGB)</li>
+            <li><code>48;5;N</code> - 8-bit ANSI background</li>
+            <li><code>48;2;R;G;B</code> - Truecolor background</li>
+        </ul>
+
+        <h2>Usage Example</h2>
+
+        <pre><code class="language-typescript"><span class="keyword">package</span> main
+
+<span class="keyword">import</span> (
+    <span class="string">"./portalis"</span>
+    <span class="string">"./portalis/screen"</span>
+)
+
+<span class="keyword">func</span> <span class="type">main</span>() {
+    screen := <span class="operator">&</span>screen.NewScreen(24, 80)
+    parser := portalis.NewParser(screen)
+    
+    parser.SetCWDCallback(<span class="keyword">func</span>(cwd <span class="type">string</span>) {
+        fmt.Println(<span class="string">"Working directory changed to:"</span>, cwd)
+    })
+    
+    data := []<span class="type">byte</span>{
+        0x1b, <span class="string">"["</span>, <span class="string">"3</span>, <span class="string">8</span>, <span class="string">;"</span>, <span class="string">5</span>, <span class="string">;"</span>, <span class="string">196</span>, <span class="string">;"</span>, <span class="string">1</span>, <span class="string">m</span>, <span class="string">H</span>, <span class="string">e</span>, <span class="string">l</span>, <span class="string">l</span>, <span class="string">o</span>, <span class="string">!</span>, <span class="string">"</span>,
+        0x1b, <span class="string">"["</span>, <span class="string">7</span>, <span class="string">;"</span>, <span class="string">file</span>:<span class="string">//</span><span class="string">localhost</span>/<span class="string">/home</span>/user, <span class="string">"\x07"</span>,
+    }
+    
+    parser.Feed(data)
+}</code></pre>
+        <footer>Generated by code-check</footer>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/rust.min.js"></script>
+    <script>
+document.querySelectorAll('.signature code').forEach(el => hljs.highlightElement(el));
+hljs.highlightAll();
+</script>
+</body>
+</html>

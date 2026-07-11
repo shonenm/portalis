@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>emulator</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --code-bg: #161b22;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            margin: 0;
+            padding: 2rem 1rem;
+        }
+
+        .doc-container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            color: var(--accent);
+        }
+
+        h3 { font-size: 1.2rem; margin-top: 1.5rem; }
+
+        p { margin: 0.75rem 0; }
+
+        a { color: var(--accent); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            text-align: left;
+        }
+
+        th { background: var(--bg); color: var(--accent); }
+
+        ul, ol { margin: 0.75rem 0; padding-left: 1.5rem; }
+
+        li { margin: 0.25rem 0; }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background: var(--code-bg);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 0.85em;
+        }
+
+        .signature {
+            background: var(--code-bg);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+
+        .signature pre {
+            background: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .signature code {
+            background: transparent;
+            padding: 0;
+        }
+
+        footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <article class="doc-container">
+        <h1>Emulator - Terminal Emulator</h1>
+
+        <p><strong>Emulator</strong> is a built-in terminal emulator implemented in Go. It runs a shell/command in a PTY (pseudo-terminal) and renders the output. It is independent of any UI framework; hosts feed it keyboard/mouse/resize messages and call <code>View(width, height)</code> to render it.</p>
+
+        <h2>Overview</h2>
+
+        <p>The emulator provides:</p>
+        <ul>
+            <li>Full terminal emulation with PTY support</li>
+            <li>Keyboard input handling including clipboard paste (Ctrl+V)</li>
+            <li>Mouse support with drag selection</li>
+            <li>Scrollback buffer with configurable limit</li>
+            <li>Command history tracking</li>
+            <li>CWD (current working directory) tracking via OSC 7</li>
+            <li>ASCII art idle state when stopped</li>
+        </ul>
+
+        <h2>Types</h2>
+
+        <h3>ResizeMsg</h3>
+
+        <div class="signature">
+<pre><code class="language-go">type ResizeMsg struct {
+	Width  int
+	Height int
+}</code></pre>
+</div>
+
+        <p><strong>ResizeMsg</strong> is sent by a host when the emulator's allocated rectangle changes. It carries the content size in cells (without borders or padding).</p>
+
+        <h3>CursorBlinkMsg</h3>
+
+        <div class="signature">
+<pre><code class="language-go">type CursorBlinkMsg struct{}
+
+type cursorBlinkMsg = CursorBlinkMsg</code></pre>
+</div>
+
+        <p><strong>CursorBlinkMsg</strong> is sent by the host to toggle the cursor blink state. A single host-level timer should broadcast this message to all visible terminal emulators so their cursors blink in sync.</p>
+
+        <h3>PtyReadyMsg</h3>
+
+        <div class="signature">
+<pre><code class="language-go">type PtyReadyMsg struct {
+	SessionID      string
+	AlreadyRunning bool
+}</code></pre>
+</div>
+
+        <p><strong>PtyReadyMsg</strong> is sent when the PTY is ready for listening.</p>
+
+        <h3>PtyExitMsg</h3>
+
+        <div class="signature">
+<pre><code class="language-go">type PtyExitMsg struct {
+	SessionID string
+	Err       error
+}</code></pre>
+</div>
+
+        <h2>Emulator Struct</h2>
+
+        <div class="signature">
+<pre><code class="language-go">type Emulator struct {
+	SessionID string
+	ChatName  string
+	cmd       string
+	args      []string
+
+	screen  *Screen
+	parser  *Parser
+	pty     *Pty
+	focused bool
+
+	width  int
+	height int
+
+	// stopped indicates the underlying session has been terminated and the
+	// panel should show the idle ASCII art icon instead of terminal output.
+	stopped bool
+
+	// cwd is the last reported working directory (via OSC 7).
+	cwd string
+
+	// commandHistory holds commands entered in this terminal.
+	commandHistory []string
+
+	// Callbacks invoked when cwd or command history changes.
+	OnCWDChange             func(string)
+	OnCommandHistoryChanged func([]string)
+
+	// initialCWD is set before Start and used to chdir the PTY process.
+	initialCWD string
+
+	// scrollbackLimit caps the screen scrollback buffer.
+	scrollbackLimit int
+
+	// Drag-select state: remember the press position and whether an
+	// actual drag is in progress. Selection starts only when the mouse
+	// moves more than one cell from the press position.
+	pressX, pressY int
+	dragSelecting  bool
+
+	mu sync.RWMutex
+}</code></pre>
+</div>
+
+        <h2>Public API</h2>
+
+        <h3>NewEmulator</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func NewEmulator(sessionID, chatName, command string, args []string) *Emulator</code></pre>
+</div>
+
+        <p><strong>NewEmulator</strong> creates a new terminal emulator for the given session. If command is empty, it tries to find a shell (bash, sh).</p>
+
+        <h3>Start</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Start() tea.Cmd</code></pre>
+</div>
+
+        <p><strong>Start</strong> begins spawning the PTY process. Returns <code>PtyReadyMsg</code> when done.</p>
+
+        <h3>StartSync</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) StartSync(extraEnv []string) error</code></pre>
+</div>
+
+        <p><strong>StartSync</strong> spawns the PTY process synchronously with extra environment variables. Unlike <code>StartWithEnv</code>, it does not return a tea.Cmd — the PTY is ready immediately. Returns an error if spawning fails.</p>
+
+        <h3>StartWithEnv</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) StartWithEnv(extraEnv []string) tea.Cmd</code></pre>
+</div>
+
+        <p><strong>StartWithEnv</strong> begins spawning the PTY process with extra environment variables.</p>
+
+        <h3>Listenable</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Listen() tea.Cmd</code></pre>
+</div>
+
+        <p><strong>Listenable</strong> returns a command that waits for PTY output.</p>
+
+        <h3>SetScrollbackLimit</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) SetScrollbackLimit(limit int)</code></pre>
+</div>
+
+        <p><strong>SetScrollbackLimit</strong> sets the maximum number of scrollback lines. Non-positive values disable the limit. Call before Start to take effect; calling after Start updates the existing screen immediately.</p>
+
+        <h3>SetInitialCWD</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) SetInitialCWD(dir string)</code></pre>
+</div>
+
+        <p><strong>SetInitialCWD</strong> sets the directory in which the PTY process starts.</p>
+
+        <h3>SetCommandHistory</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) SetCommandHistory(history []string)</code></pre>
+</div>
+
+        <p><strong>SetCommandHistory</strong> restores a previously saved command history.</p>
+
+        <h3>View</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) View(width, height int) string</code></pre>
+</div>
+
+        <p><strong>View</strong> renders the terminal screen at the given panel size. The screen size is kept in sync by <code>ResizeMsg</code> from the warp layout engine; during a drag the panel is filled by warp's padContent and the real resize happens on release.</p>
+
+        <h3>Update</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Update(msg tea.Msg) tea.Cmd</code></pre>
+</div>
+
+        <p><strong>Update</strong> handles messages. Supports:</p>
+        <ul>
+            <li><code>tea.KeyMsg</code> - keyboard input</li>
+            <li><code>tea.MouseMsg</code> - mouse events (wheel, click, drag)</li>
+            <li><code>tea.WindowSizeMsg</code> - window size changes</li>
+            <li><code>ResizeMsg</code> - panel resize</li>
+            <li><code>PtyReadyMsg</code> - PTY ready</li>
+            <li><code>CursorBlinkMsg</code> - cursor blink toggle</li>
+            <li><code>PtyOutputMsg</code> - PTY output</li>
+            <li><code>PtyExitMsg</code> - PTY exit</li>
+        </ul>
+
+        <h3>Focus</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Focus()</code></pre>
+</div>
+
+        <p><strong>Focus</strong> marks the emulator as focused.</p>
+
+        <h3>Blur</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Blur()</code></pre>
+</div>
+
+        <p><strong>Blur</strong> marks the emulator as blurred.</p>
+
+        <h3>Close</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Close()</code></pre>
+</div>
+
+        <p><strong>Close</strong> closes the PTY.</p>
+
+        <h3>Stop</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Stop()</code></pre>
+</div>
+
+        <p><strong>Stop</strong> terminates the session and switches the panel to the idle ASCII art view.</p>
+
+        <h3>Pty</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) Pty() *Pty</code></pre>
+</div>
+
+        <p><strong>Pty</strong> returns the underlying PTY for debug purposes.</p>
+
+        <h2>Key Handling</h2>
+
+        <p>The emulator supports full keyboard input:</p>
+        <ul>
+            <li>Arrows (Up, Down, Left, Right)</li>
+            <li>Home, End, Page Up, Page Down</li>
+            <li>Delete, Insert</li>
+            <li>Tab, Shift+Tab</li>
+            <li>Enter (newline)</li>
+            <li>Backspace, Escape, Space</li>
+            <li>Ctrl+C, Ctrl+D, Ctrl+J, Ctrl+L, Ctrl+Z</li>
+            <li>Character runes</li>
+        </ul>
+
+        <p><strong>Ctrl+V</strong> pastes from the clipboard. This is a special case handled directly before normal key processing.</p>
+
+        <h2>Mouse Handling</h2>
+
+        <p>The emulator supports mouse input via SGR mouse sequences:</p>
+        <ul>
+            <li>Left, Middle, Right button clicks</li>
+            <li>Wheel up/down</li>
+            <li>Press, Motion, Release events</li>
+        </ul>
+
+        <p>Drag selection works as follows:</p>
+        <ol>
+            <li>Mouse press: records position, does not start selection</li>
+            <li>Mouse motion: if moves more than 1 cell from press position, starts selection</li>
+            <li>Extend selection as mouse moves</li>
+            <li>Mouse release: copies selection to clipboard</li>
+        </ol>
+
+        <h2>Scrollback</h2>
+
+        <p>Scrollback is controlled via mouse wheel or programmatic calls:</p>
+        <ul>
+            <li><code>scrollUp(lines int)</code> - scroll up by given lines</li>
+            <li><code>scrollDown(lines int)</code> - scroll down by given lines</li>
+            <li><code>resetView()</code> - reset the view (called on keystroke)</li>
+        </ul>
+
+        <h2>Command History</h2>
+
+        <p>Commands entered in the terminal are tracked in <code>commandHistory</code> (max 1000 entries). The history is captured when Enter is pressed, and the prompt prefix is stripped.</p>
+
+        <p>Callbacks:</p>
+        <ul>
+            <li><code>OnCWDChange(path string)</code> - called when working directory changes</li>
+            <li><code>OnCommandHistoryChanged(history []string)</code> - called when command history changes</li>
+        </ul>
+
+        <h2>Implementation Details</h2>
+
+        <h3>PTY Configuration</h3>
+
+        <p>The emulator configures the shell to emit OSC 7 with the current directory after each prompt:</p>
+
+        <pre><code class="language-go">osc7Cmd := `echo -ne "\033]7;${PWD}\007"`
+env = append(env, "PROMPT_COMMAND="+osc7Cmd)</code></pre>
+
+        <h3>Key Encoding</h3>
+
+        <p>Keyboard events are converted to terminal byte sequences:</p>
+
+        <pre><code class="language-go">func keyToBytes(msg tea.KeyMsg) []byte {
+    switch msg.Type {
+    case tea.KeyUp:
+        return []byte("\x1b[A")
+    case tea.KeyDown:
+        return []byte("\x1b[B")
+    // ... more keys
+    }
+}</code></pre>
+
+        <h3>Mouse Encoding</h3>
+
+        <p>Mouse events are encoded as SGR mouse sequences:</p>
+
+        <pre><code class="language-go">func mouseToBytes(msg tea.MouseMsg) []byte {
+    var cb int
+    switch msg.Button {
+    case tea.MouseButtonLeft:
+        cb = 0
+    case tea.MouseButtonMiddle:
+        cb = 1
+    case tea.MouseButtonRight:
+        cb = 2
+    case tea.MouseButtonWheelUp:
+        cb = 4
+    case tea.MouseButtonWheelDown:
+        cb = 5
+    default:
+        cb = 3
+    }
+    // ... build sequence
+    seq := fmt.Sprintf("\x1b[&lt;%d;%d;%d%c", cb, x, y, suffix)
+    return []byte(seq)
+}</code></pre>
+
+        <h3>ASCII Art Idle State</h3>
+
+        <p>When stopped, the emulator shows an ASCII art icon:</p>
+
+        <pre><code class="language-go">const asciiArtIcon = `
+     _____
+    /     \
+   /  AI   \
+  /_________\
+   |  | |  |
+   |  | |  |
+   \______/
+`</code></pre>
+
+        <h2>Thread Safety</h2>
+
+        <p>The <code>Emulator</code> uses an <code>sync.RWMutex</code> for thread safety:</p>
+        <ul>
+            <li>Write locks (Lock/Unlock) for state mutations</li>
+            <li>Read locks (RLock/RUnlock) for read-only access</li>
+        </ul>
+
+        <p>Important: The parser callback is invoked without holding the mutex to avoid deadlocks, since the callback may call back into emulator methods that also take the mutex.</p>
+        <footer>Generated by code-check</footer>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/rust.min.js"></script>
+    <script>
+document.querySelectorAll('.signature code').forEach(el => hljs.highlightElement(el));
+hljs.highlightAll();
+</script>
+</body>
+</html>

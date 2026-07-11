@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>screen</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --code-bg: #161b22;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            margin: 0;
+            padding: 2rem 1rem;
+        }
+
+        .doc-container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            color: var(--accent);
+        }
+
+        h3 { font-size: 1.2rem; margin-top: 1.5rem; }
+
+        p { margin: 0.75rem 0; }
+
+        a { color: var(--accent); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            text-align: left;
+        }
+
+        th { background: var(--bg); color: var(--accent); }
+
+        ul, ol { margin: 0.75rem 0; padding-left: 1.5rem; }
+
+        li { margin: 0.25rem 0; }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background: var(--code-bg);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 0.85em;
+        }
+
+        .signature {
+            background: var(--code-bg);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+
+        .signature pre {
+            background: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .signature code {
+            background: transparent;
+            padding: 0;
+        }
+
+        footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <article class="doc-container">
+        <h1>Screen - Portalis Terminal Emulator</h1>
+
+        <p><code>screen</code> implements a terminal screen emulator for Go, providing a 2D grid of styled cells with ANSI escape code rendering. It supports cursor management, scrollback buffers, text selection, synchronized output, and alt screen buffers.</p>
+
+        <h2>Types</h2>
+
+        <h3>StyleBits</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// StyleBits holds text style attributes.
+type StyleBits uint8</code></pre>
+        </div>
+
+        <p>A bitmask for terminal text attributes:</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Constant</th>
+                    <th>Value</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>StyleBold</code></td>
+                    <td><code>1 &lt;&lt; iota</code></td>
+                    <td>Bold text</td>
+                </tr>
+                <tr>
+                    <td><code>StyleDim</code></td>
+                    <td>2</td>
+                    <td>Faint/dim text</td>
+                </tr>
+                <tr>
+                    <td><code>StyleItalic</code></td>
+                    <td>4</td>
+                    <td>Italic text</td>
+                </tr>
+                <tr>
+                    <td><code>StyleUnderline</code></td>
+                    <td>8</td>
+                    <td>Underlined text</td>
+                </tr>
+                <tr>
+                    <td><code>StyleBlink</code></td>
+                    <td>16</td>
+                    <td>Blinking text</td>
+                </tr>
+                <tr>
+                    <td><code>StyleReverse</code></td>
+                    <td>32</td>
+                    <td>Reversed foreground/background</td>
+                </tr>
+                <tr>
+                    <td><code>StyleHidden</code></td>
+                    <td>64</td>
+                    <td>Hidden text</td>
+                </tr>
+                <tr>
+                    <td><code>StyleStrikethrough</code></td>
+                    <td>128</td>
+                    <td>Strikethrough text</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Cell</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// Cell is a single character cell on the terminal screen.
+type Cell struct {
+    Rune  rune
+    FG    lipgloss.Color
+    BG    lipgloss.Color
+    Style StyleBits
+}</code></pre>
+        </div>
+
+        <p>A single character cell containing:</p>
+        <ul>
+            <li><code>Rune</code> - The character to display</li>
+            <li><code>FG</code> - Foreground color (as <code>lipgloss.Color</code>)</li>
+            <li><code>BG</code> - Background color (as <code>lipgloss.Color</code>)</li>
+            <li><code>Style</code> - Text style bitmask</li>
+        </ul>
+
+        <h3>Cursor</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// Cursor represents the terminal cursor position.
+type Cursor struct {
+    Row int
+    Col int
+    FG  lipgloss.Color
+    BG  lipgloss.Color
+    Style StyleBits
+}</code></pre>
+        </div>
+
+        <p>The cursor position and styling:</p>
+        <ul>
+            <li><code>Row</code> - Cursor row (0-indexed)</li>
+            <li><code>Col</code> - Cursor column (0-indexed)</li>
+            <li><code>FG</code> - Cursor foreground color</li>
+            <li><code>BG</code> - Cursor background color</li>
+            <li><code>Style</code> - Cursor style bitmask</li>
+        </ul>
+
+        <h3>Screen</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// Screen is a 2D grid of cells.
+type Screen struct {
+    Rows   int
+    Cols   int
+    Cells  [][]Cell
+    Cursor Cursor
+
+    savedCursor            Cursor
+    savedCells             [][]Cell
+    scrollTop, scrollBottom int // 0-indexed, DECSTBM. Default 0, Rows-1.
+    wrapPending            bool  // true after writing to last column; next char wraps.
+
+    scrollback      [][]Cell // lines scrolled off the top
+    scrollbackLimit int
+    viewOffset      int      // lines scrolled back in the view
+
+    syncActive bool   // true during synchronized output (ESC[?2026h)
+    lastRender string // last committed render while sync is active
+
+    CursorBlinkVisible bool // toggled by emulator for blinking cursor
+
+    // selection tracks a text drag-select rectangle. -1 means unset.
+    selStartRow, selStartCol int
+    selEndRow, selEndCol     int
+    selectionActive          bool
+}</code></pre>
+        </div>
+
+        <h2>Public API</h2>
+
+        <h3>Creation</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// NewScreen creates a new screen with the given dimensions.
+// Scrollback is capped to defaultScrollbackLimit lines by default.
+func NewScreen(rows, cols int) *Screen</code></pre>
+        </div>
+
+        <p>Creates a new screen with the specified number of rows and columns. The scrollback buffer is capped to 10,000 lines by default.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// SetScrollbackLimit sets the maximum number of scrollback lines. A value
+// of zero or less disables the limit (not recommended for long-running
+// sessions).
+func (s *Screen) SetScrollbackLimit(limit int)</code></pre>
+        </div>
+
+        <p>Configures the maximum size of the scrollback buffer. Zero or negative values disable the limit.</p>
+
+        <h3>Resizing</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// Resize resizes the screen, preserving existing content.
+func (s *Screen) Resize(rows, cols int)</code></pre>
+        </div>
+
+        <p>Resizes the screen to the new dimensions. Content is preserved within the new bounds. The cursor position is clamped to the new dimensions.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// SetScrollRegion sets the scrolling region (DECSTBM).
+// top and bottom are 1-indexed (as sent by ANSI).
+func (s *Screen) SetScrollRegion(top, bottom int)</code></pre>
+        </div>
+
+        <p>Sets the terminal's scroll region. The parameters are 1-indexed as in ANSI escape sequences.</p>
+
+        <h3>Cursor Operations</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// SetCursor sets the cursor position (1-indexed in ANSI, 0-indexed here).
+func (s *Screen) SetCursor(row, col int)</code></pre>
+        </div>
+
+        <p>Sets the cursor position. Values are clamped to valid bounds.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// Put writes a rune at the cursor position and advances the cursor.
+// Implements the standard terminal "pending wrap" behaviour: writing to the
+// last column leaves the cursor at the last column and defers wrapping until
+// the next printable character.
+func (s *Screen) Put(r rune)</code></pre>
+        </div>
+
+        <p>Writes a character at the cursor position and advances the cursor. Implements terminal "pending wrap" behavior where writing to the last column defers wrapping until the next character.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// CursorPos returns the current cursor position.
+func (s *Screen) CursorPos() (row, col int)</code></pre>
+        </div>
+
+        <p>Returns the current cursor row and column.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// SaveCursor saves the current cursor position.
+func (s *Screen) SaveCursor()</code></pre>
+        </div>
+
+        <p>Saves the current cursor position (position only, not styling).</p>
+
+        <div class="signature">
+<pre><code class="language-go">// RestoreCursor restores the saved cursor position.
+func (s *Screen) RestoreCursor()</code></pre>
+        </div>
+
+        <p>Restores the cursor position that was previously saved.</p>
+
+        <h3>Selection</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// StartSelection begins a selection at the given cell.
+func (s *Screen) StartSelection(row, col int)</code></pre>
+        </div>
+
+        <p>Starts a text selection at the specified cell. Invalid positions are clamped.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ExtendSelection updates the selection end to the given cell.
+func (s *Screen) ExtendSelection(row, col int)</code></pre>
+        </div>
+
+        <p>Extends the current selection to the specified cell. Only works when a selection is active.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ClearSelection clears any active selection.
+func (s *Screen) ClearSelection()</code></pre>
+        </div>
+
+        <p>Cancels any active text selection.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// SelectionText returns the text currently highlighted by the selection,
+// with each line as one string in the slice. Trailing whitespace trimmed.
+// When dragging left on a single row, the column under the mouse (the
+// lower col index) is excluded.
+func (s *Screen) SelectionText() []string</code></pre>
+        </div>
+
+        <p>Returns the selected text as a slice of strings, one per line. Trailing whitespace is trimmed from each line.</p>
+
+        <h3>Clearing</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// Clear clears the entire screen.
+func (s *Screen) Clear()</code></pre>
+        </div>
+
+        <p>Clears all cells on the screen.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ClearLine clears the current line from cursor to end.
+func (s *Screen) ClearLine()</code></pre>
+        </div>
+
+        <p>Clears the current line from the cursor position to the end.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ClearLineLeft clears from start of line to cursor.
+func (s *Screen) ClearLineLeft()</code></pre>
+        </div>
+
+        <p>Clears the current line from the start to the cursor position.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ClearLineAll clears the entire current line.
+func (s *Screen) ClearLineAll()</code></pre>
+        </div>
+
+        <p>Clears the entire current line.</p>
+
+        <h3>Scrolling</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// ScrollUp scrolls the active region up by one line.
+func (s *Screen) ScrollUp()</code></pre>
+        </div>
+
+        <p>Scrolls the screen up by one line. Lines scrolled off the top are saved to the scrollback buffer.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ScrollViewUp moves the view up into the scrollback by n lines.
+func (s *Screen) ScrollViewUp(n int)</code></pre>
+        </div>
+
+        <p>Moves the visible view up into the scrollback buffer by <code>n</code> lines.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ScrollViewDown moves the view down towards the live screen by n lines.
+func (s *Screen) ScrollViewDown(n int)</code></pre>
+        </div>
+
+        <p>Moves the visible view down towards the live screen by <code>n</code> lines.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ResetView resets the view offset so the live screen is shown.
+func (s *Screen) ResetView()</code></pre>
+        </div>
+
+        <p>Resets the view to show the live screen (no scrollback).</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ViewOffset returns how many lines the view is scrolled back.
+func (s *Screen) ViewOffset() int</code></pre>
+        </div>
+
+        <p>Returns the current view offset (how many lines scrolled back).</p>
+
+        <h3>Synchronized Output</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// SetSync enables or disables synchronized output (ESC[?2026h/l).
+// While synchronized output is active, Render() returns the last committed
+// frame so intermediate redraw states are not visible.
+func (s *Screen) SetSync(active bool)</code></pre>
+        </div>
+
+        <p>Enables or disables synchronized output mode. When active, <code>Render()</code> returns the last committed frame.</p>
+
+        <h3>Rendering</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// Render returns the screen as a string. If the view is scrolled back,
+// lines are taken from the scrollback buffer; otherwise the live screen is
+// rendered.
+func (s *Screen) Render() string</code></pre>
+        </div>
+
+        <p>Renders the screen to a string. Respects the current view offset and scrollback buffer.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// LineText returns the plain text of the given screen row, ignoring trailing
+// empty cells. It is used to capture the current command line before sending
+// Enter to the PTY.
+func (s *Screen) LineText(row int) string</code></pre>
+        </div>
+
+        <p>Returns the plain text of a specific row, trimming trailing whitespace. Returns empty string for invalid row indices.</p>
+
+        <h3>Alt Screen Buffer</h3>
+
+        <div class="signature">
+<pre><code class="language-go">// EnterAltScreen saves the current screen and clears it.
+func (s *Screen) EnterAltScreen()</code></pre>
+        </div>
+
+        <p>Enters the alternate screen buffer, saving the current screen and clearing it.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// ExitAltScreen restores the saved screen.
+func (s *Screen) ExitAltScreen()</code></pre>
+        </div>
+
+        <p>Exits the alternate screen buffer, restoring the saved screen. If no saved screen exists, this is a no-op.</p>
+
+        <h2>Internal Functions</h2>
+
+        <div class="signature">
+<pre><code class="language-go">// resize(rows, cols int)
+func (s *Screen) resize(rows, cols int)</code></pre>
+        </div>
+
+        <p>Internal resize function that resets the scroll region and invalidates cached renders.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// scrollLineUp moves the active region up by one line, saving the scrolled-off
+// line to the scrollback buffer if the region starts at the top of the screen.
+// A pending selection is cleared because the content the user was selecting
+// has moved out of screen coordinates.
+func (s *Screen) scrollLineUp()</code></pre>
+        </div>
+
+        <p>Internal scroll implementation that handles scrollback buffer management.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// renderToString renders the current screen state without considering sync.
+func (s *Screen) renderToString() string</code></pre>
+        </div>
+
+        <p>Internal rendering function that builds the string representation of the screen.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// renderLine(r int, cursorRow bool) string
+func (s *Screen) renderLine(r int, cursorRow bool) string</code></pre>
+        </div>
+
+        <p>Internal function to render a single line, handling cursor highlighting.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// renderScrollbackLine(idx int) string
+func (s *Screen) renderScrollbackLine(idx int) string</code></pre>
+        </div>
+
+        <p>Internal function to render a line from the scrollback buffer.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// renderCells(cells []Cell, cursorRow bool, row int) string
+func (s *Screen) renderCells(cells []Cell, cursorRow bool, row int) string</code></pre>
+        </div>
+
+        <p>Internal function to render a row of cells with ANSI escape codes for styling and cursor/selection highlighting.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// cellInSelection(row, col int) bool
+func (s *Screen) cellInSelection(row, col int) bool</code></pre>
+        </div>
+
+        <p>Internal function to check if a cell is within the current selection rectangle.</p>
+
+        <div class="signature">
+<pre><code class="language-go">// renderStyle(fg, bg lipgloss.Color, style StyleBits) string
+func renderStyle(fg, bg lipgloss.Color, style StyleBits) string</code></pre>
+        </div>
+
+        <p>Internal helper to generate ANSI SGR codes for styling (colors and text attributes).</p>
+
+        <div class="signature">
+<pre><code class="language-go">// sgrColor(c lipgloss.Color, bg bool) string
+func sgrColor(c lipgloss.Color, bg bool) string</code></pre>
+        </div>
+
+        <p>Internal helper to convert a <code>lipgloss.Color</code> to an ANSI SGR color code. Supports hex colors converted to RGB.</p>
+
+        <h2>Behavior Notes</h2>
+
+        <h3>Scrollback Buffer</h3>
+
+        <p>The scrollback buffer is capped to prevent unbounded memory growth. The default limit is 10,000 lines. Lines are saved in FIFO order when scrolling up.</p>
+
+        <h3>Pending Wrap</h3>
+
+        <p>When writing to the last column of a line, the cursor remains in place and <code>wrapPending</code> is set. The next character write will wrap the cursor to the first column of the next line.</p>
+
+        <h3>Selection</h3>
+
+        <p>Selection supports drag-left behavior where the starting column is excluded from the selection. The <code>SelectionText()</code> method returns lines without trailing whitespace.</p>
+
+        <h3>Synchronized Output</h3>
+
+        <p>When synchronized output is active (<code>SetSync(true)</code>), <code>Render()</code> returns the last committed frame. This prevents intermediate rendering states from being visible.</p>
+
+        <h3>Cursor Blink</h3>
+
+        <p>The <code>CursorBlinkVisible</code> flag is set by the emulator to control cursor blinking.</p>
+
+        <h3>Alt Screen</h3>
+
+        <p>Entering alt screen saves the current screen content and cursor position, then clears and resets the screen. Exitting restores the saved state.</p>
+        <footer>Generated by code-check</footer>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/rust.min.js"></script>
+    <script>
+document.querySelectorAll('.signature code').forEach(el => hljs.highlightElement(el));
+hljs.highlightAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>clipboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --code-bg: #161b22;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            margin: 0;
+            padding: 2rem 1rem;
+        }
+
+        .doc-container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-top: 0;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            color: var(--accent);
+        }
+
+        h3 { font-size: 1.2rem; margin-top: 1.5rem; }
+
+        p { margin: 0.75rem 0; }
+
+        a { color: var(--accent); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            text-align: left;
+        }
+
+        th { background: var(--bg); color: var(--accent); }
+
+        ul, ol { margin: 0.75rem 0; padding-left: 1.5rem; }
+
+        li { margin: 0.25rem 0; }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            background: var(--code-bg);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 0.85em;
+        }
+
+        .signature {
+            background: var(--code-bg);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+
+        .signature pre {
+            background: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .signature code {
+            background: transparent;
+            padding: 0;
+        }
+
+        footer {
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <article class="doc-container">
+        <h1>Clipboard</h1>
+
+        <p>This module provides clipboard operations for cross-platform text and image handling. It supports macOS, Linux, and Wayland environments, with automatic detection of the available clipboard tool.</p>
+
+        <h2>Package Overview</h2>
+
+        <p>The <code>clipboard</code> package in the <code>portalis</code> module implements system clipboard reading and writing. It is designed to work with a TTY emulator that uses bracketed paste sequences for text input.</p>
+
+        <p>Key capabilities:</p>
+        <ul>
+            <li>Cross-platform clipboard support (macOS, Linux, Wayland)</li>
+            <li>Image clipboard handling via temporary files</li>
+            <li>Automatic detection of available clipboard tools</li>
+            <li>Bracketed paste integration for terminal applications</li>
+        </ul>
+
+        <h2>Public API</h2>
+
+        <h3>copyToClipboard</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func copyToClipboard(lines []string)</code></pre>
+        </div>
+
+        <p>Sends the given lines (newline-joined) to the system clipboard.</p>
+
+        <p><strong>Parameters:</strong></p>
+        <ul>
+            <li><code>lines []string</code> - slice of text lines to copy, joined with newlines</li>
+        </ul>
+
+        <p><strong>Behavior:</strong></p>
+        <ul>
+            <li>Empty input is ignored (no-op)</li>
+            <li>Tries to find an available clipboard tool in this order:</li>
+            </ul>
+        <ol>
+            <li><code>pbcopy</code> (macOS native)</li>
+            <li><code>xclip</code> (Linux X11)</li>
+            <li><code>xsel</code> (Linux X11 alternative)</li>
+            <li><code>wl-copy</code> (Wayland)</li>
+        </ol>
+        <p>The function returns after the first successful copy operation.</p>
+
+        <h3>pasteFromClipboard</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func pasteFromClipboard() (text string, imagePath string, err error)</code></pre>
+        </div>
+
+        <p>Returns the clipboard contents. If the clipboard contains an image, it is saved to a temp file and the file path is returned as <code>imagePath</code>. Otherwise the plain-text contents are returned as <code>text</code>.</p>
+
+        <p><strong>Return values:</strong></p>
+        <ul>
+            <li><code>text</code> - clipboard text content (empty string if image)</li>
+            <li><code>imagePath</code> - path to saved image file (empty string if text)</li>
+            <li><code>err</code> - error if no clipboard tool is available</li>
+        </ul>
+
+        <p><strong>Platform detection order:</strong></p>
+        <ol>
+            <li>macOS: uses inline Swift script for image detection</li>
+            <li>Wayland: uses <code>wl-paste</code></li>
+            <li>X11: uses <code>xclip</code></li>
+        </ol>
+
+        <h3>handlePaste</h3>
+
+        <div class="signature">
+<pre><code class="language-go">func (e *Emulator) handlePaste() tea.Cmd</code></pre>
+        </div>
+
+        <p>Reads the clipboard and writes either the text or the image file path to the PTY (bracketed paste for text, plain path for images).</p>
+
+        <p><strong>Method receiver:</strong></p>
+        <ul>
+            <li><code>e *Emulator</code> - the emulator instance</li>
+        </ul>
+
+        <p><strong>Return value:</strong></p>
+        <ul>
+            <li>Returns a <code>tea.Cmd</code> that writes to the PTY, or <code>nil</code> if no PTY is available</li>
+        </ul>
+
+        <p><strong>Bracketed paste format:</strong></p>
+        <pre><code class="language-go">ESC[200~{text}ESC[201~</code></pre>
+
+        <h2>Implementation Details</h2>
+
+        <h3>Platform-Specific Clipboard Readers</h3>
+
+        <h4>macOS (pasteMac)</h4>
+
+        <p>macOS clipboard handling uses a two-step approach:</p>
+        <ol>
+            <li>First, tries the inline Swift script (<code>pasteMacImage</code>) to detect any image UTI</li>
+            <li>Falls back to <code>pbpaste</code> for text content</li>
+        </ol>
+
+        <p>The Swift script checks for these image types:</p>
+        <ul>
+            <li><code>public.png</code></li>
+            <li><code>public.jpeg</code></li>
+            <li><code>public.tiff</code></li>
+            <li><code>com.adobe.pdf</code></li>
+        </ul>
+
+        <h4>Wayland (pasteWayland)</h4>
+
+        <p>Wayland clipboard handling uses <code>wl-paste</code> with two attempts:</p>
+        <ol>
+            <li>Text first: <code>wl-paste --no-newline</code></li>
+            <li>If that fails, try <code>wl-paste --type image/png</code></li>
+        </ol>
+
+        <p>Text output is checked for PNG signature to detect embedded images.</p>
+
+        <h4>X11 (pasteX11)</h4>
+
+        <p>X11 clipboard handling uses <code>xclip</code>:</p>
+        <ol>
+            <li>First tries to read PNG: <code>xclip -selection clipboard -o -t image/png</code></li>
+            <li>Then reads plain text: <code>xclip -selection clipboard -o</code></li>
+        </ol>
+
+        <h3>Image Handling (saveImageBytes)</h3>
+
+        <p>The <code>saveImageBytes</code> function:</p>
+        <ul>
+            <li>Validates PNG data using <code>image.DecodeConfig</code></li>
+            <li>Creates a temp directory under <code>os.TempDir()</code> named <code>automata-clip</code></li>
+            <li>Saves image with timestamp-based filename</li>
+            <li>Decodes and re-encodes via PNG to strip any invalid bytes</li>
+            <li>Permissions: 0644 for files, 0755 for directories</li>
+        </ul>
+
+        <h3>Error Handling</h3>
+
+        <p>Errors are returned for:</p>
+        <ul>
+            <li>No clipboard tool found</li>
+            <li>Swift script execution failure</li>
+            <li>Image save failure</li>
+            <li>PNG validation failure</li>
+        </ul>
+
+        <h2>Dependencies</h2>
+
+        <p>The package depends on:</p>
+        <ul>
+            <li><code>github.com/charmbracelet/bubbletea</code> - for TTY emulator integration</li>
+            <li>Standard library: <code>bytes</code>, <code>fmt</code>, <code>image</code>, <code>image/png</code>, <code>os</code>, <code>os/exec</code>, <code>path/filepath</code>, <code>strings</code>, <code>time</code></li>
+        </ul>
+
+        <h2>Temporary Files</h2>
+
+        <p>Images are saved to a temporary directory:</p>
+        <pre><code class="language-typescript">/tmp/automata-clip/</code></pre>
+
+        <p>Files are named with timestamps and are cleaned up on save failure or when the function returns an error.</p>
+
+        <h2>Notes</h2>
+
+        <ul>
+            <li>macOS <code>pbpaste</code> only returns text representation, not raw image bytes</li>
+            <li>On Wayland, text is checked for PNG header to detect image data</li>
+            <li>The emulator must have a PTY attached for <code>handlePaste</code> to work</li>
+            <li>Empty clipboard (no text, no image) results in nil command being returned</li>
+        </ul>
+        <footer>Generated by code-check</footer>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/rust.min.js"></script>
+    <script>
+document.querySelectorAll('.signature code').forEach(el => hljs.highlightElement(el));
+hljs.highlightAll();
+</script>
+</body>
+</html>

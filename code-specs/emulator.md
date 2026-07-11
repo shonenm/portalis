@@ -1,0 +1,290 @@
+# Emulator
+
+## Назначение
+
+`Emulator` — встроенный терминальный эмулятор, который запускает оболочку/command в PTY (псевдо-терминал) и отображает вывод. Работает независимо от UI-фреймворка; хосты подают ему сообщения о клавиатуре/мышь/размере и вызывают `View(width, height)` для рендеринга.
+
+Использует библиотеку `bubbletea` для управления TUI-приложением.
+
+## Публичный API
+
+### Конструктор
+
+```go
+func NewEmulator(sessionID, chatName, command string, args []string) *Emulator
+```
+
+Создаёт новый терминальный эмулятор для указанной сессии. Если `command` пуст, пытается найти оболочку (bash, sh).
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| sessionID | string | Идентификатор сессии |
+| chatName | string | Имя чата |
+| command | string | Команда для запуска (оболочка) |
+| args | []string | Аргументы команды |
+
+### Старт
+
+```go
+func (e *Emulator) Start() tea.Cmd
+```
+
+Начинает запуск процесса PTY. Возвращает `tea.Cmd`, который возвращит `PtyReadyMsg` по готовности.
+
+```go
+func (e *Emulator) StartSync(extraEnv []string) error
+```
+
+Запускает PTY синхронно с дополнительными переменными окружения. Не возвращает `tea.Cmd` — PTY готов сразу. Возвращает ошибку при неудаче.
+
+```go
+func (e *Emulator) StartWithEnv(extraEnv []string) tea.Cmd
+```
+
+Запуск PTY с переменными окружения. Возвращает `tea.Cmd`, завершающий работу и возвращающий `PtyReadyMsg` или `PtyExitMsg`.
+
+```go
+func (e *Emulator) SetScrollbackLimit(limit int)
+```
+
+Устанавливает максимальное количество линий скролла. Значения ≤ 0 отключают лимит. Вызывать до `Start()` для вступления в силу, после `Start()` обновляет экран сразу.
+
+```go
+func (e *Emulator) SetInitialCWD(dir string)
+```
+
+Устанавливает каталог, в котором начнётся PTY-процесс.
+
+```go
+func (e *Emulator) SetCommandHistory(history []string)
+```
+
+Восстанавливает ранее сохранённую историю команд.
+
+```go
+func (e *Emulator) Close()
+```
+
+Закрывает PTY.
+
+```go
+func (e *Emulator) Stop()
+```
+
+Завершает сессию и переключает панель на вид с ASCII-артом.
+
+```go
+func (e *Emulator) Focus()
+```
+
+Отмечает эмулятор как сфокусированный.
+
+```go
+func (e *Emulator) Blur()
+```
+
+Отмечает эмулятор как нефокусированный.
+
+```go
+func (e *Emulator) View(width, height int) string
+```
+
+Рендерит терминальный экран при заданном размере панели. Размер экрана синхронизируется через `ResizeMsg` от warp layout engine.
+
+```go
+func (e *Emulator) Update(msg tea.Msg) tea.Cmd
+```
+
+Обрабатывает сообщения.
+
+### Callbacks
+
+```go
+func (e *Emulator) OnCWDChange func(string)
+```
+
+Вызывается при смене рабочей директории.
+
+```go
+func (e *Emulator) OnCommandHistoryChanged func([]string)
+```
+
+Вызывается при изменении истории команд.
+
+### Debug
+
+```go
+func (e *Emulator) Pty() *Pty
+```
+
+Возвращает underlying PTY для отладки.
+
+## Типы сообщений
+
+### ResizeMsg
+
+```go
+type ResizeMsg struct {
+    Width  int
+    Height int
+}
+```
+
+Подаётся хостом, когда выделенная прямоугольная область эмулятора изменилась. Содержит размер контента в ячейках (без границ или отступов).
+
+### CursorBlinkMsg
+
+```go
+type CursorBlinkMsg struct{}
+```
+
+Подаётся хостом для переключения состояния мигания курсора. Один таймер хоста должен транслировать это сообщение всем видимым терминальным эмуляторам для синхронизации мигания курсоров.
+
+### PtyReadyMsg
+
+```go
+type PtyReadyMsg struct {
+    SessionID      string
+    AlreadyRunning bool
+}
+```
+
+Подаётся, когда PTY готов к прослушиванию.
+
+### PtyExitMsg
+
+```go
+type PtyExitMsg struct {
+    SessionID string
+    Err       error
+}
+```
+
+Подаётся, когда PTY завершил работу с ошибкой.
+
+## Структура данных Emulator
+
+```go
+type Emulator struct {
+    SessionID string          // Идентификатор сессии
+    ChatName  string          // Имя чата
+    cmd       string          // Команда для запуска
+    args      []string        // Аргументы команды
+    screen    *Screen         // Экран терминала
+    parser    *Parser         // Парсер вывода
+    pty       *Pty            // PTY процесс
+    focused   bool            // Сфокусирован или нет
+    width     int             // Ширина панели
+    height    int             // Высота панели
+    stopped   bool            // Завершена ли сессия
+    cwd       string          // Последняя рабочая директория (OSC 7)
+    commandHistory []string       // История команд
+    initialCWD string          // Изначальная рабочая директория
+    scrollbackLimit int          // Лимит скролла
+    pressX, pressY int         // Позиция нажатия мыши
+    dragSelecting bool          // В процессе ли drag-выбора
+    mu        sync.RWMutex   // Мьютекс для синхронизации
+}
+```
+
+## Вспомогательные функции
+
+### DefaultShell / defaultShell
+
+```go
+func DefaultShell() (string, []string)
+func defaultShell() (string, []string)
+```
+
+Возвращают рабочую оболочку (bash, sh). `defaultShell` — устаревший внутренний алиас для обратной совместимости.
+
+### stripPrompt
+
+```go
+func stripPrompt(line string) string
+```
+
+Удаляет префикш shell prompt с терминальной строки. Ищет последнее появление общих маркеров завершения prompt: `$ `, `# `, `> `, `% `.
+
+### renderAsciiArt
+
+```go
+func renderAsciiArt(width, height int) string
+```
+
+Возвращает ASCII-арт иконку, показываемую, когда сессия завершена. Центрирует арт в заданном размере.
+
+### emptyView
+
+```go
+func emptyView(width, height int) string
+```
+
+Возвращает пустой экран (пробелы) для эмулятора, у которого ещё нет PTY.
+
+### keyToBytes
+
+```go
+func keyToBytes(msg tea.KeyMsg) []byte
+```
+
+Конвертирует событие `tea.KeyMsg` в последовательность байтов, отправляемую PTY. Обрабатывает все стандартные клавиши (стрелки, Enter, Escape, Ctrl+*, Shift+Enter и т.д.).
+
+### mouseToBytes
+
+```go
+func mouseToBytes(msg tea.MouseMsg) []byte
+```
+
+Кодирует событие мыши bubbletea в SGR-последовательность мыши, чтобы TUI-приложения внутри PTY (например, ai-knowledge) получали отдельные события press/release/wheel.
+
+### listenPty
+
+```go
+func listenPty(sessionID string, p *Pty) tea.Cmd
+```
+
+Возвращает команду, блокирующуюся до появления вывода PTY. Используется в `Listen()` для асинхронного получения данных.
+
+## Правила
+
+- Таргет Terminal должен быть явно объявлен проектом.
+- TUI-библиотеки разрешены только для работ в рамках terminal target.
+- Терминальный рендеринг должен сохранять keyboard-first взаимодействие.
+- Поддержка мыши разрешена, но она не должна быть единственной моделью взаимодействия без явного решения.
+- Запуск дочерних процессов должен иметь явные границы и обработку ошибок.
+
+## Внутреннее поведение
+
+### Старт
+
+1. Создаётся `Screen` 24×80 (можно изменить через `SetScrollbackLimit`).
+2. Создаётся `Parser` с callback'ом на смену рабочей директории.
+3. Запускается PTY через `spawnPty(extraEnv)`.
+4. Если ширина/высота заданы — ресайз экрана и PTY.
+
+### Обработка клавиш
+
+- `Ctrl+V` → вставка буфера обмена.
+- Любое нажатие возвращает экран в live режим.
+- При `Enter` извлекается команда из строки, сохраняется в историю (max 1000).
+- Байты пишутся синхронно в PTY для сохранения порядка нажатий.
+
+### Обработка мыши
+
+- Колёсо: скроллинг вверх/вниз на 3 линии.
+- Левая кнопка:
+  - Press → запоминаем позицию.
+  - Motion > 1 клетка → начинаем drag-выбор.
+  - Release → копируем выделенный текст в буфер обмена.
+- Все события (включая Press) форвардятся в PTY, чтобы приложения (например, ai-knowledge) получали полные кликовые последовательности.
+
+### Обработка ресайза
+
+- `WindowSizeMsg` от bubbletea игнорируется — размер панели идёт через `ResizeMsg`.
+- `ResizeMsg` обновляет `width`, `height`, ресайзит экран и PTY.
+
+### Скроллинг
+
+- `scrollUp(lines)` / `scrollDown(lines)` — скролл вверх/вниз.
+- Колёсо мыши вызывает `scrollUp(3)` / `scrollDown(3)`.
