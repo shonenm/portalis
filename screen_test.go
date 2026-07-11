@@ -157,6 +157,54 @@ func TestViewOffsetClamp(t *testing.T) {
 	}
 }
 
+func TestRenderCachesUnchangedScreen(t *testing.T) {
+	s := NewScreen(2, 5)
+	s.Put('A')
+	if !s.renderDirty {
+		t.Fatal("screen must be dirty after mutation")
+	}
+
+	first := s.Render()
+	if s.renderDirty {
+		t.Fatal("screen must be clean after render")
+	}
+	if second := s.Render(); second != first {
+		t.Fatalf("cached render changed: first=%q second=%q", first, second)
+	}
+	if s.renderDirty {
+		t.Fatal("cached render unexpectedly dirtied the screen")
+	}
+
+	s.Put('B')
+	if !s.renderDirty {
+		t.Fatal("screen mutation did not invalidate render cache")
+	}
+	if third := s.Render(); third == first {
+		t.Fatalf("render cache was not refreshed: %q", third)
+	}
+}
+
+func BenchmarkScreenRenderCached(b *testing.B) {
+	s := NewScreen(40, 120)
+	p := NewParser(s)
+	p.Feed([]byte("\x1b[?25l\x1b(B\x1b[2J\x1b[Htmux status"))
+	s.Render()
+	b.ResetTimer()
+	for range b.N {
+		s.Render()
+	}
+}
+
+func BenchmarkParserTmuxFrame(b *testing.B) {
+	frame := []byte("\x1b[?25l\x1b(B\x1b[2J\x1b[Htmux\x1b[2;1Hstatus\x1b[?25h")
+	b.ResetTimer()
+	for range b.N {
+		s := NewScreen(40, 120)
+		NewParser(s).Feed(frame)
+		s.Render()
+	}
+}
+
 // RenderLine returns the raw content of a single row for testing.
 func (s *Screen) RenderLine(r int) string {
 	if r < 0 || r >= s.Rows {

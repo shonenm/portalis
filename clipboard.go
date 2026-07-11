@@ -86,10 +86,10 @@ print("NO_IMAGE")
 `
 
 // pasteMac reads the macOS clipboard. Order:
-//   1. Try the inline Swift reader for any image UTI (works for any
-//      source app — Preview, screenshots, browsers, etc.).
-//   2. Fall back to pbpaste for text. pbpaste never returns raw image
-//      bytes, so the inline Swift path is the only reliable image read.
+//  1. Try the inline Swift reader for any image UTI (works for any
+//     source app — Preview, screenshots, browsers, etc.).
+//  2. Fall back to pbpaste for text. pbpaste never returns raw image
+//     bytes, so the inline Swift path is the only reliable image read.
 func pasteMac() (string, string, error) {
 	if path, err := pasteMacImage(); err == nil && path != "" {
 		// Confirm it actually exists and is non-empty.

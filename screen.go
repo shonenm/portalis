@@ -42,18 +42,22 @@ type Screen struct {
 	Cells  [][]Cell
 	Cursor Cursor
 
-	savedCursor            Cursor
-	savedCells             [][]Cell
-	scrollTop, scrollBottom int // 0-indexed, DECSTBM. Default 0, Rows-1.
-	wrapPending            bool  // true after writing to last column; next char wraps.
+	savedCursor             Cursor
+	savedCells              [][]Cell
+	scrollTop, scrollBottom int  // 0-indexed, DECSTBM. Default 0, Rows-1.
+	wrapPending             bool // true after writing to last column; next char wraps.
 
 	scrollback      [][]Cell // lines scrolled off the top
 	scrollbackLimit int
-	viewOffset      int      // lines scrolled back in the view
+	viewOffset      int // lines scrolled back in the view
 
-	syncActive bool   // true during synchronized output (ESC[?2026h)
-	lastRender string // last committed render while sync is active
+	syncActive  bool   // true during synchronized output (ESC[?2026h)
+	lastRender  string // last committed render while sync is active
+	renderDirty bool
 
+	applicationCursor  bool
+	bracketedPaste     bool
+	CursorVisible      bool
 	CursorBlinkVisible bool // toggled by emulator for blinking cursor
 
 	// selection tracks a text drag-select rectangle. -1 means unset.
@@ -67,6 +71,7 @@ func (s *Screen) StartSelection(row, col int) {
 	if row < 0 || row >= s.Rows || col < 0 || col >= s.Cols {
 		return
 	}
+	s.markDirty()
 	s.selStartRow, s.selStartCol = row, col
 	s.selEndRow, s.selEndCol = row, col
 	s.selectionActive = true
@@ -77,6 +82,7 @@ func (s *Screen) ExtendSelection(row, col int) {
 	if !s.selectionActive {
 		return
 	}
+	s.markDirty()
 	if row < 0 {
 		row = 0
 	}
@@ -94,6 +100,9 @@ func (s *Screen) ExtendSelection(row, col int) {
 
 // ClearSelection clears any active selection.
 func (s *Screen) ClearSelection() {
+	if s.selectionActive {
+		s.markDirty()
+	}
 	s.selectionActive = false
 }
 
@@ -195,10 +204,10 @@ func (s *Screen) SelectionText() []string {
 
 // Cursor represents the terminal cursor position.
 type Cursor struct {
-	Row int
-	Col int
-	FG  lipgloss.Color
-	BG  lipgloss.Color
+	Row   int
+	Col   int
+	FG    lipgloss.Color
+	BG    lipgloss.Color
 	Style StyleBits
 }
 
@@ -209,7 +218,14 @@ const defaultScrollbackLimit = 10000
 // NewScreen creates a new screen with the given dimensions.
 // Scrollback is capped to defaultScrollbackLimit lines by default.
 func NewScreen(rows, cols int) *Screen {
-	s := &Screen{Rows: rows, Cols: cols, scrollBottom: rows - 1, scrollbackLimit: defaultScrollbackLimit}
+	s := &Screen{
+		Rows:            rows,
+		Cols:            cols,
+		scrollBottom:    rows - 1,
+		scrollbackLimit: defaultScrollbackLimit,
+		CursorVisible:   true,
+		renderDirty:     true,
+	}
 	s.resize(rows, cols)
 	return s
 }
@@ -218,6 +234,7 @@ func NewScreen(rows, cols int) *Screen {
 // of zero or less disables the limit (not recommended for long-running
 // sessions).
 func (s *Screen) SetScrollbackLimit(limit int) {
+	s.markDirty()
 	s.scrollbackLimit = limit
 	if limit > 0 && len(s.scrollback) > limit {
 		s.scrollback = s.scrollback[len(s.scrollback)-limit:]
@@ -225,6 +242,7 @@ func (s *Screen) SetScrollbackLimit(limit int) {
 }
 
 func (s *Screen) resize(rows, cols int) {
+	s.markDirty()
 	old := s.Cells
 	s.Cells = make([][]Cell, rows)
 	for r := 0; r < rows; r++ {
@@ -261,6 +279,7 @@ func (s *Screen) Resize(rows, cols int) {
 
 // Clear clears the entire screen.
 func (s *Screen) Clear() {
+	s.markDirty()
 	for r := range s.Cells {
 		for c := range s.Cells[r] {
 			s.Cells[r][c] = Cell{}
@@ -274,6 +293,7 @@ func (s *Screen) ClearLine() {
 	if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
 		return
 	}
+	s.markDirty()
 	for c := s.Cursor.Col; c < s.Cols; c++ {
 		s.Cells[s.Cursor.Row][c] = Cell{}
 	}
@@ -285,6 +305,7 @@ func (s *Screen) ClearLineLeft() {
 	if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
 		return
 	}
+	s.markDirty()
 	for c := 0; c <= s.Cursor.Col && c < s.Cols; c++ {
 		s.Cells[s.Cursor.Row][c] = Cell{}
 	}
@@ -296,6 +317,7 @@ func (s *Screen) ClearLineAll() {
 	if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
 		return
 	}
+	s.markDirty()
 	for c := 0; c < s.Cols; c++ {
 		s.Cells[s.Cursor.Row][c] = Cell{}
 	}
@@ -310,15 +332,12 @@ func (s *Screen) Put(r rune) {
 	if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
 		return
 	}
+	s.markDirty()
 
 	if s.wrapPending {
 		s.wrapPending = false
 		s.Cursor.Col = 0
-		s.Cursor.Row++
-		if s.Cursor.Row >= s.Rows {
-			s.scrollLineUp()
-			s.Cursor.Row = s.Rows - 1
-		}
+		s.Index()
 	}
 
 	if s.Cursor.Col < 0 || s.Cursor.Col >= s.Cols {
@@ -341,6 +360,7 @@ func (s *Screen) Put(r rune) {
 
 // SetCursor sets the cursor position (1-indexed in ANSI, 0-indexed here).
 func (s *Screen) SetCursor(row, col int) {
+	s.markDirty()
 	if row < 0 {
 		row = 0
 	}
@@ -371,6 +391,7 @@ func (s *Screen) scrollLineUp() {
 	if s.Rows <= 1 {
 		return
 	}
+	s.markDirty()
 	top := s.scrollTop
 	bottom := s.scrollBottom
 	if bottom <= top {
@@ -390,9 +411,133 @@ func (s *Screen) scrollLineUp() {
 	for r := top + 1; r <= bottom; r++ {
 		copy(s.Cells[r-1], s.Cells[r])
 	}
-	for c := 0; c < s.Cols; c++ {
-		s.Cells[bottom][c] = Cell{}
+	clear(s.Cells[bottom])
+}
+
+// Index moves the cursor down, scrolling the active region at its bottom.
+func (s *Screen) Index() {
+	s.markDirty()
+	if s.Cursor.Row == s.scrollBottom {
+		s.scrollLineUp()
+		return
 	}
+	if s.Cursor.Row < s.Rows-1 {
+		s.Cursor.Row++
+	}
+}
+
+// NextLine moves to column zero on the next line.
+func (s *Screen) NextLine() {
+	s.markDirty()
+	s.Cursor.Col = 0
+	s.wrapPending = false
+	s.Index()
+}
+
+// ReverseIndex moves the cursor up, scrolling the active region down at its top.
+func (s *Screen) ReverseIndex() {
+	s.markDirty()
+	if s.Cursor.Row == s.scrollTop {
+		s.ScrollRegionDown(1)
+		return
+	}
+	if s.Cursor.Row > 0 {
+		s.Cursor.Row--
+	}
+	s.wrapPending = false
+}
+
+// ScrollRegionUp scrolls the active region up by n lines.
+func (s *Screen) ScrollRegionUp(n int) {
+	for range normalizedCount(n, s.scrollBottom-s.scrollTop+1) {
+		s.scrollLineUp()
+	}
+}
+
+// ScrollRegionDown scrolls the active region down by n lines.
+func (s *Screen) ScrollRegionDown(n int) {
+	s.markDirty()
+	n = normalizedCount(n, s.scrollBottom-s.scrollTop+1)
+	for r := s.scrollBottom; r >= s.scrollTop+n; r-- {
+		copy(s.Cells[r], s.Cells[r-n])
+	}
+	for r := s.scrollTop; r < s.scrollTop+n; r++ {
+		clear(s.Cells[r])
+	}
+	if s.selectionActive {
+		s.selectionActive = false
+	}
+	s.wrapPending = false
+}
+
+// InsertChars inserts n blank cells at the cursor.
+func (s *Screen) InsertChars(n int) {
+	s.markDirty()
+	n = normalizedCount(n, s.Cols-s.Cursor.Col)
+	row := s.Cells[s.Cursor.Row]
+	copy(row[s.Cursor.Col+n:], row[s.Cursor.Col:s.Cols-n])
+	clear(row[s.Cursor.Col : s.Cursor.Col+n])
+	s.wrapPending = false
+}
+
+// DeleteChars deletes n cells at the cursor and shifts the remainder left.
+func (s *Screen) DeleteChars(n int) {
+	s.markDirty()
+	n = normalizedCount(n, s.Cols-s.Cursor.Col)
+	row := s.Cells[s.Cursor.Row]
+	copy(row[s.Cursor.Col:], row[s.Cursor.Col+n:])
+	clear(row[s.Cols-n:])
+	s.wrapPending = false
+}
+
+// EraseChars clears n cells starting at the cursor without shifting text.
+func (s *Screen) EraseChars(n int) {
+	s.markDirty()
+	n = normalizedCount(n, s.Cols-s.Cursor.Col)
+	clear(s.Cells[s.Cursor.Row][s.Cursor.Col : s.Cursor.Col+n])
+	s.wrapPending = false
+}
+
+// InsertLines inserts n blank lines at the cursor inside the active region.
+func (s *Screen) InsertLines(n int) {
+	if s.Cursor.Row < s.scrollTop || s.Cursor.Row > s.scrollBottom {
+		return
+	}
+	s.markDirty()
+	n = normalizedCount(n, s.scrollBottom-s.Cursor.Row+1)
+	for r := s.scrollBottom; r >= s.Cursor.Row+n; r-- {
+		copy(s.Cells[r], s.Cells[r-n])
+	}
+	for r := s.Cursor.Row; r < s.Cursor.Row+n; r++ {
+		clear(s.Cells[r])
+	}
+	s.wrapPending = false
+}
+
+// DeleteLines deletes n lines at the cursor inside the active region.
+func (s *Screen) DeleteLines(n int) {
+	if s.Cursor.Row < s.scrollTop || s.Cursor.Row > s.scrollBottom {
+		return
+	}
+	s.markDirty()
+	n = normalizedCount(n, s.scrollBottom-s.Cursor.Row+1)
+	for r := s.Cursor.Row; r <= s.scrollBottom-n; r++ {
+		copy(s.Cells[r], s.Cells[r+n])
+	}
+	for r := s.scrollBottom - n + 1; r <= s.scrollBottom; r++ {
+		clear(s.Cells[r])
+	}
+	s.wrapPending = false
+}
+
+func normalizedCount(n, maximum int) int {
+	if n <= 0 {
+		n = 1
+	}
+	if n > maximum {
+		n = maximum
+	}
+	return n
 }
 
 // SaveCursor saves the current cursor position.
@@ -406,6 +551,7 @@ func (s *Screen) SaveCursor() {
 
 // RestoreCursor restores the saved cursor position.
 func (s *Screen) RestoreCursor() {
+	s.markDirty()
 	row := s.savedCursor.Row
 	col := s.savedCursor.Col
 	if row < 0 {
@@ -427,6 +573,7 @@ func (s *Screen) RestoreCursor() {
 
 // EnterAltScreen saves the current screen and clears it.
 func (s *Screen) EnterAltScreen() {
+	s.markDirty()
 	s.savedCells = make([][]Cell, s.Rows)
 	for r := 0; r < s.Rows; r++ {
 		s.savedCells[r] = make([]Cell, s.Cols)
@@ -442,6 +589,7 @@ func (s *Screen) ExitAltScreen() {
 	if s.savedCells == nil {
 		return
 	}
+	s.markDirty()
 	s.Cells = s.savedCells
 	s.savedCells = nil
 	row := s.savedCursor.Row
@@ -526,6 +674,7 @@ func (s *Screen) ScrollViewUp(n int) {
 	if max == 0 {
 		return
 	}
+	s.markDirty()
 	s.viewOffset += n
 	if s.viewOffset > max {
 		s.viewOffset = max
@@ -534,6 +683,7 @@ func (s *Screen) ScrollViewUp(n int) {
 
 // ScrollViewDown moves the view down towards the live screen by n lines.
 func (s *Screen) ScrollViewDown(n int) {
+	s.markDirty()
 	s.viewOffset -= n
 	if s.viewOffset < 0 {
 		s.viewOffset = 0
@@ -542,6 +692,9 @@ func (s *Screen) ScrollViewDown(n int) {
 
 // ResetView resets the view offset so the live screen is shown.
 func (s *Screen) ResetView() {
+	if s.viewOffset != 0 {
+		s.markDirty()
+	}
 	s.viewOffset = 0
 }
 
@@ -549,10 +702,19 @@ func (s *Screen) ResetView() {
 // While synchronized output is active, Render() returns the last committed
 // frame so intermediate redraw states are not visible.
 func (s *Screen) SetSync(active bool) {
+	if active && !s.syncActive && (s.renderDirty || s.lastRender == "") {
+		s.lastRender = s.renderToString()
+		s.renderDirty = false
+	}
 	s.syncActive = active
 	if !active {
 		s.lastRender = s.renderToString()
+		s.renderDirty = false
 	}
+}
+
+func (s *Screen) markDirty() {
+	s.renderDirty = true
 }
 
 // Render returns the screen as a string. If the view is scrolled back,
@@ -562,14 +724,18 @@ func (s *Screen) Render() string {
 	if s.syncActive {
 		return s.lastRender
 	}
+	if !s.renderDirty && s.lastRender != "" {
+		return s.lastRender
+	}
 	s.lastRender = s.renderToString()
+	s.renderDirty = false
 	return s.lastRender
 }
 
 // renderToString renders the current screen state without considering sync.
 func (s *Screen) renderToString() string {
 	var lines []string
-	cursorHere := s.viewOffset == 0 && s.CursorBlinkVisible
+	cursorHere := s.viewOffset == 0 && s.CursorVisible && s.CursorBlinkVisible
 	if s.viewOffset > 0 {
 		max := len(s.scrollback)
 		if s.viewOffset > max {

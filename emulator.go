@@ -15,7 +15,7 @@ import (
 const asciiArtIcon = `
      _____
     /     \
-   /  AI   \
+   /       \
   /_________\
    |  | |  |
    |  | |  |
@@ -214,7 +214,7 @@ func (e *Emulator) Listen() tea.Cmd {
 	if e.pty == nil {
 		return nil
 	}
-	return listenPty(e.SessionID, e.pty)
+	return e.pty.Listen(e.SessionID)
 }
 
 // DefaultShell returns a usable login shell, preferring absolute paths so it
@@ -282,6 +282,7 @@ func (e *Emulator) Update(msg tea.Msg) tea.Cmd {
 		e.mu.Lock()
 		if e.screen != nil {
 			e.screen.CursorBlinkVisible = !e.screen.CursorBlinkVisible
+			e.screen.markDirty()
 		}
 		e.mu.Unlock()
 		return nil
@@ -315,11 +316,6 @@ func (e *Emulator) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (e *Emulator) handleKey(msg tea.KeyMsg) tea.Cmd {
-	// Ctrl+V (Cmd+V on macOS via most terminals) → paste clipboard.
-	if msg.Type == tea.KeyCtrlV {
-		return e.handlePaste()
-	}
-
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -331,7 +327,12 @@ func (e *Emulator) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if e.pty == nil {
 		return nil
 	}
-	data := keyToBytes(msg)
+	modes := keyEncodingModes{}
+	if e.screen != nil {
+		modes.applicationCursor = e.screen.applicationCursor
+		modes.bracketedPaste = e.screen.bracketedPaste
+	}
+	data := keyToBytesWithModes(msg, modes)
 	if len(data) == 0 {
 		return nil
 	}
@@ -636,64 +637,130 @@ func emptyView(width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
+type keyEncodingModes struct {
+	applicationCursor bool
+	bracketedPaste    bool
+}
+
 func keyToBytes(msg tea.KeyMsg) []byte {
+	return keyToBytesWithModes(msg, keyEncodingModes{})
+}
+
+func keyToBytesWithModes(msg tea.KeyMsg, modes keyEncodingModes) []byte {
+	if msg.Type == tea.KeyRunes {
+		data := []byte(string(msg.Runes))
+		if msg.Paste && modes.bracketedPaste {
+			data = append([]byte("\x1b[200~"), data...)
+			data = append(data, []byte("\x1b[201~")...)
+			return data
+		}
+		return withAltPrefix(data, msg.Alt)
+	}
+
+	if msg.Type >= tea.KeyCtrlAt && msg.Type <= tea.KeyCtrlUnderscore || msg.Type == tea.KeyBackspace {
+		return withAltPrefix([]byte{byte(msg.Type)}, msg.Alt)
+	}
+
+	shift, ctrl := keyModifiers(msg.Type)
+	modifier := xtermModifier(shift, msg.Alt, ctrl)
+
 	switch msg.Type {
-	case tea.KeyUp:
-		return []byte("\x1b[A")
-	case tea.KeyDown:
-		return []byte("\x1b[B")
-	case tea.KeyRight:
-		return []byte("\x1b[C")
-	case tea.KeyLeft:
-		return []byte("\x1b[D")
-	case tea.KeyHome:
-		return []byte("\x1b[H")
-	case tea.KeyEnd:
-		return []byte("\x1b[F")
-	case tea.KeyPgUp:
-		return []byte("\x1b[5~")
-	case tea.KeyPgDown:
-		return []byte("\x1b[6~")
+	case tea.KeyUp, tea.KeyShiftUp, tea.KeyCtrlUp, tea.KeyCtrlShiftUp:
+		return cursorKeySequence('A', modifier, modes.applicationCursor)
+	case tea.KeyDown, tea.KeyShiftDown, tea.KeyCtrlDown, tea.KeyCtrlShiftDown:
+		return cursorKeySequence('B', modifier, modes.applicationCursor)
+	case tea.KeyRight, tea.KeyShiftRight, tea.KeyCtrlRight, tea.KeyCtrlShiftRight:
+		return cursorKeySequence('C', modifier, modes.applicationCursor)
+	case tea.KeyLeft, tea.KeyShiftLeft, tea.KeyCtrlLeft, tea.KeyCtrlShiftLeft:
+		return cursorKeySequence('D', modifier, modes.applicationCursor)
+	case tea.KeyHome, tea.KeyShiftHome, tea.KeyCtrlHome, tea.KeyCtrlShiftHome:
+		return cursorKeySequence('H', modifier, modes.applicationCursor)
+	case tea.KeyEnd, tea.KeyShiftEnd, tea.KeyCtrlEnd, tea.KeyCtrlShiftEnd:
+		return cursorKeySequence('F', modifier, modes.applicationCursor)
+	case tea.KeyPgUp, tea.KeyCtrlPgUp:
+		return tildeKeySequence(5, modifier)
+	case tea.KeyPgDown, tea.KeyCtrlPgDown:
+		return tildeKeySequence(6, modifier)
 	case tea.KeyDelete:
-		return []byte("\x1b[3~")
+		return tildeKeySequence(3, modifier)
 	case tea.KeyInsert:
-		return []byte("\x1b[2~")
-	case tea.KeyTab:
-		return []byte("\t")
+		return tildeKeySequence(2, modifier)
 	case tea.KeyShiftTab:
-		// Standard terminal sequence for Shift+Tab.
 		return []byte("\x1b[Z")
-	case tea.KeyEnter:
-		if msg.String() == "shift+enter" {
-			return []byte("\n")
-		}
-		return []byte("\r")
-	case tea.KeyBackspace:
-		return []byte("\x7f")
-	case tea.KeyEscape:
-		return []byte("\x1b")
 	case tea.KeySpace:
-		return []byte(" ")
-	case tea.KeyCtrlC:
-		return []byte("\x03")
-	case tea.KeyCtrlD:
-		return []byte("\x04")
-	case tea.KeyCtrlJ:
-		// Ctrl+J / LF is what some terminals send for Shift+Enter.
-		return []byte("\n")
-	case tea.KeyCtrlL:
-		return []byte("\x0c")
-	case tea.KeyCtrlZ:
-		return []byte("\x1a")
-	case tea.KeyRunes:
-		// Shift+Enter on some terminals is delivered as a literal newline
-		// rune rather than a modified KeyEnter.
-		if string(msg.Runes) == "\n" {
-			return []byte("\n")
+		return withAltPrefix([]byte(" "), msg.Alt)
+	case tea.KeyF1, tea.KeyF2, tea.KeyF3, tea.KeyF4:
+		final := byte('P' + (tea.KeyF1 - msg.Type))
+		if modifier == 1 {
+			return []byte{0x1b, 'O', final}
 		}
-		return []byte(string(msg.Runes))
+		return []byte(fmt.Sprintf("\x1b[1;%d%c", modifier, final))
+	case tea.KeyF5, tea.KeyF6, tea.KeyF7, tea.KeyF8, tea.KeyF9, tea.KeyF10, tea.KeyF11, tea.KeyF12:
+		codes := [...]int{15, 17, 18, 19, 20, 21, 23, 24}
+		return tildeKeySequence(codes[int(tea.KeyF5-msg.Type)], modifier)
+	case tea.KeyF13, tea.KeyF14, tea.KeyF15, tea.KeyF16:
+		return []byte(fmt.Sprintf("\x1b[1;2%c", byte('P'+(tea.KeyF13-msg.Type))))
+	case tea.KeyF17, tea.KeyF18, tea.KeyF19, tea.KeyF20:
+		codes := [...]int{15, 17, 18, 19}
+		return []byte(fmt.Sprintf("\x1b[%d;2~", codes[int(tea.KeyF17-msg.Type)]))
 	}
 	return nil
+}
+
+func withAltPrefix(data []byte, alt bool) []byte {
+	if !alt {
+		return data
+	}
+	result := make([]byte, 1, len(data)+1)
+	result[0] = 0x1b
+	return append(result, data...)
+}
+
+func keyModifiers(key tea.KeyType) (shift, ctrl bool) {
+	switch key {
+	case tea.KeyShiftUp, tea.KeyShiftDown, tea.KeyShiftRight, tea.KeyShiftLeft,
+		tea.KeyShiftHome, tea.KeyShiftEnd:
+		shift = true
+	case tea.KeyCtrlUp, tea.KeyCtrlDown, tea.KeyCtrlRight, tea.KeyCtrlLeft,
+		tea.KeyCtrlHome, tea.KeyCtrlEnd, tea.KeyCtrlPgUp, tea.KeyCtrlPgDown:
+		ctrl = true
+	case tea.KeyCtrlShiftUp, tea.KeyCtrlShiftDown, tea.KeyCtrlShiftRight, tea.KeyCtrlShiftLeft,
+		tea.KeyCtrlShiftHome, tea.KeyCtrlShiftEnd:
+		shift = true
+		ctrl = true
+	}
+	return shift, ctrl
+}
+
+func xtermModifier(shift, alt, ctrl bool) int {
+	modifier := 1
+	if shift {
+		modifier++
+	}
+	if alt {
+		modifier += 2
+	}
+	if ctrl {
+		modifier += 4
+	}
+	return modifier
+}
+
+func cursorKeySequence(final byte, modifier int, application bool) []byte {
+	if modifier != 1 {
+		return []byte(fmt.Sprintf("\x1b[1;%d%c", modifier, final))
+	}
+	if application {
+		return []byte{0x1b, 'O', final}
+	}
+	return []byte{0x1b, '[', final}
+}
+
+func tildeKeySequence(code, modifier int) []byte {
+	if modifier == 1 {
+		return []byte(fmt.Sprintf("\x1b[%d~", code))
+	}
+	return []byte(fmt.Sprintf("\x1b[%d;%d~", code, modifier))
 }
 
 // CursorBlinkMsg is sent by the host to toggle the cursor blink state.
@@ -708,16 +775,4 @@ type cursorBlinkMsg = CursorBlinkMsg
 type PtyReadyMsg struct {
 	SessionID      string
 	AlreadyRunning bool
-}
-
-// listenPty returns a command that blocks until PTY output is available.
-func listenPty(sessionID string, p *Pty) tea.Cmd {
-	return func() tea.Msg {
-		select {
-		case data := <-p.Output:
-			return PtyOutputMsg{SessionID: sessionID, Data: data}
-		case err := <-p.Errors:
-			return PtyExitMsg{SessionID: sessionID, Err: err}
-		}
-	}
 }

@@ -89,7 +89,7 @@ func (e *Emulator) Blur()
 func (e *Emulator) View(width, height int) string
 ```
 
-Рендерит терминальный экран при заданном размере панели. Размер экрана синхронизируется через `ResizeMsg` от warp layout engine.
+Рендерит терминальный экран при заданном размере панели. Размер экрана синхронизируется через `ResizeMsg`.
 
 ```go
 func (e *Emulator) Update(msg tea.Msg) tea.Cmd
@@ -167,8 +167,8 @@ type PtyExitMsg struct {
 ```go
 type Emulator struct {
     SessionID string          // Идентификатор сессии
-    ChatName  string          // Имя чата
-    cmd       string          // Команда для запуска
+    ChatName  string          // Имя чата/сессии
+    cmd       string          // Команда для запуска (bash/sh)
     args      []string        // Аргументы команды
     screen    *Screen         // Экран терминала
     parser    *Parser         // Парсер вывода
@@ -178,7 +178,7 @@ type Emulator struct {
     height    int             // Высота панели
     stopped   bool            // Завершена ли сессия
     cwd       string          // Последняя рабочая директория (OSC 7)
-    commandHistory []string       // История команд
+    commandHistory []string       // История команд (max 1000)
     initialCWD string          // Изначальная рабочая директория
     scrollbackLimit int          // Лимит скролла
     pressX, pressY int         // Позиция нажатия мыши
@@ -204,7 +204,7 @@ func defaultShell() (string, []string)
 func stripPrompt(line string) string
 ```
 
-Удаляет префикш shell prompt с терминальной строки. Ищет последнее появление общих маркеров завершения prompt: `$ `, `# `, `> `, `% `.
+Удаляет префикс shell prompt с терминальной строки. Ищет последнее появление общих маркеров завершения prompt: `$ `, `# `, `> `, `% `.
 
 ### renderAsciiArt
 
@@ -222,13 +222,23 @@ func emptyView(width, height int) string
 
 Возвращает пустой экран (пробелы) для эмулятора, у которого ещё нет PTY.
 
-### keyToBytes
+### keyToBytes / keyToBytesWithModes
 
 ```go
 func keyToBytes(msg tea.KeyMsg) []byte
+func keyToBytesWithModes(msg tea.KeyMsg, modes keyEncodingModes) []byte
 ```
 
-Конвертирует событие `tea.KeyMsg` в последовательность байтов, отправляемую PTY. Обрабатывает все стандартные клавиши (стрелки, Enter, Escape, Ctrl+*, Shift+Enter и т.д.).
+Конвертирует `tea.KeyMsg` в последовательность байтов, отправляемую PTY. Учитывает режимы экрана (`applicationCursor`, `bracketedPaste`).
+
+**Поддерживаемые группы:**
+- C0 control keys: `Ctrl+A`…`Ctrl+_`, `Ctrl+Space`, `Backspace` — передаются как соответствующие байты 0x00–0x1F/0x7F
+- Rune keys и paste — plain bytes, с `ESC` префиксом при `Alt`
+- Bracketed paste — если `KeyMsg.Paste` и режим `?2004` включён, оборачивается в `ESC[200~...ESC[201~`
+- Стрелки, Home/End, PageUp/PageDown — xterm CSI/SS3 с modifier-параметром (1;2/3/5/7/8); SS3 используется при application cursor mode
+- F1–F20 — xterm/urxvt sequences
+- `Shift+Tab` — `ESC[Z`
+- `Ctrl+V` — передаётся как 0x16; clipboard-вставка обрабатывается через `KeyMsg.Paste`
 
 ### mouseToBytes
 
@@ -236,20 +246,10 @@ func keyToBytes(msg tea.KeyMsg) []byte
 func mouseToBytes(msg tea.MouseMsg) []byte
 ```
 
-Кодирует событие мыши bubbletea в SGR-последовательность мыши, чтобы TUI-приложения внутри PTY (например, ai-knowledge) получали отдельные события press/release/wheel.
-
-### listenPty
-
-```go
-func listenPty(sessionID string, p *Pty) tea.Cmd
-```
-
-Возвращает команду, блокирующуюся до появления вывода PTY. Используется в `Listen()` для асинхронного получения данных.
+Кодирует событие мыши bubbletea в SGR-последовательность мыши, чтобы TUI-приложения внутри PTY получали отдельные события press/release/wheel.
 
 ## Правила
 
-- Таргет Terminal должен быть явно объявлен проектом.
-- TUI-библиотеки разрешены только для работ в рамках terminal target.
 - Терминальный рендеринг должен сохранять keyboard-first взаимодействие.
 - Поддержка мыши разрешена, но она не должна быть единственной моделью взаимодействия без явного решения.
 - Запуск дочерних процессов должен иметь явные границы и обработку ошибок.
@@ -265,10 +265,12 @@ func listenPty(sessionID string, p *Pty) tea.Cmd
 
 ### Обработка клавиш
 
-- `Ctrl+V` → вставка буфера обмена.
+- `Ctrl+V` передаётся в PTY как 0x16; clipboard-вставка идёт через `KeyMsg.Paste`.
 - Любое нажатие возвращает экран в live режим.
 - При `Enter` извлекается команда из строки, сохраняется в историю (max 1000).
 - Байты пишутся синхронно в PTY для сохранения порядка нажатий.
+- Модификаторы `Alt`/`Ctrl`/`Shift` и F-клавиши кодируются в xterm-совместимые последовательности.
+- При application cursor mode (`DECSET ?1`) базовые стрелки и Home/End кодируются через SS3 (`ESC O ...`).
 
 ### Обработка мыши
 
@@ -277,12 +279,13 @@ func listenPty(sessionID string, p *Pty) tea.Cmd
   - Press → запоминаем позицию.
   - Motion > 1 клетка → начинаем drag-выбор.
   - Release → копируем выделенный текст в буфер обмена.
-- Все события (включая Press) форвардятся в PTY, чтобы приложения (например, ai-knowledge) получали полные кликовые последовательности.
+- Все события (включая Press) форвардятся в PTY, чтобы приложения получали полные кликовые последовательности.
 
 ### Обработка ресайза
 
 - `WindowSizeMsg` от bubbletea игнорируется — размер панели идёт через `ResizeMsg`.
 - `ResizeMsg` обновляет `width`, `height`, ресайзит экран и PTY.
+- PTY применяет каждый уникальный размер напрямую через `pty.Setsize` без потерь из-за throttle.
 
 ### Скроллинг
 

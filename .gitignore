@@ -23,3 +23,7 @@ vendor/
 
 # Logs
 *.log
+
+# E2E artifacts
+cuetty-artifacts/
+/tmp/portalis-e2e/

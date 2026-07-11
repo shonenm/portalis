@@ -70,7 +70,7 @@ type Screen struct {
 
     Cursor Cursor       // Текущая позиция курсора
 
-    savedCursor Cursor        // Сохранённый курсор (ESC[?2026l)
+    savedCursor Cursor        // Сохранённый курсор (ESC 7/8)
     savedCells   [][]Cell      // Содержимое при входе в альтернативный экран
 
     scrollTop, scrollBottom int   // Границы области прокрутки (DECSTBM, 0-indexed)
@@ -81,8 +81,12 @@ type Screen struct {
     wrapPending bool  // true после записи в последнюю колонку; следующая буква оборачивает
 
     syncActive bool    // true во время синхронизированного вывода
-    lastRender string   // Последний отрисованный кадр при sync
+    lastRender string   // Последний закоммиченный кадр
+    renderDirty bool    // true если lastRender устарел
 
+    applicationCursor bool // ?1h
+    bracketedPaste    bool // ?2004h
+    CursorVisible     bool // ?25h
     CursorBlinkVisible bool  // Курсор мигает (для эмулятора)
 
     selStartRow, selStartCol int  // Начало выделения
@@ -173,30 +177,35 @@ s := NewScreen(24, 80)
 
 #### `ScrollUp()` / `scrollLineUp()`
 
-Поднимает активную область на одну строку вверх.
+Поднимает активную область на одну строку вверх. Если `scrollTop == 0`, верхняя строка сохраняется в scrollback.
 
-**Побочные эффекты:**
+#### `ScrollRegionUp(n int)` / `ScrollRegionDown(n int)`
 
-- При `scrollTop == 0` первая строка сохраняется в `scrollback`
-- При наличии активного выделения оно сбрасывается
-- Scrollback буфер ограничен `scrollbackLimit`
-- Нижняя строка очищается
+Прокручивают только активную область (DECSTBM) на n строк.
 
-#### `ScrollViewUp(n int)`
+#### `Index()` / `NextLine()` / `ReverseIndex()`
 
-Перемещает просмотр вверх на `n` строк в scrollback буфер.
+- `Index()` — двигает курсор вниз; на нижней границе области прокручивает вверх.
+- `NextLine()` — колонка 0, затем `Index()`.
+- `ReverseIndex()` — двигает курсор вверх; на верхней границе области прокручивает вниз.
 
-#### `ScrollViewDown(n int)`
+#### `ScrollViewUp(n int)` / `ScrollViewDown(n int)` / `ResetView()`
 
-Перемещает просмотр вниз (ближе к live-экрану).
-
-#### `ResetView()`
-
-Сбрасывает смещение просмотра к live-экрану.
+Перемещают вид вверх/вниз по scrollback, возвращают к live-экрану.
 
 #### `ViewOffset() int`
 
 Возвращает текущее смещение просмотра.
+
+### Редактирование содержимого
+
+#### `InsertChars(n int)` / `DeleteChars(n int)` / `EraseChars(n int)`
+
+Изменяют текущую строку: ICH сдвигает текст вправо и вставляет пробелы, DCH сдвигает влево, ECH стирает ячейки без сдвига.
+
+#### `InsertLines(n int)` / `DeleteLines(n int)`
+
+Вставляют/удаляют строки внутри активной области прокрутки.
 
 ### Альтернативный экран (ANSI SGR)
 
@@ -256,33 +265,19 @@ s := NewScreen(24, 80)
 **Логика:**
 
 - Если `syncActive` → возвращает `lastRender`
-- Иначе обновляет и возвращает текущий кадр
-- При `viewOffset > 0` строки берутся из scrollback буфера
-- Иначе используется live-экран
+- Если экран не менялся с последнего рендера (`!renderDirty`) → возвращает кэшированный `lastRender`
+- Иначе обновляет кэш, сбрасывает `renderDirty` и возвращает текущий кадр
+- При `viewOffset > 0` строки берутся из scrollback; иначе используется live-экран
 
 #### `SetSync(active bool)`
 
-Включает/выключает синхронизированный вывод.
-
-- При `active = false` → сохраняет текущий кадр в `lastRender`
-- При `active = true` → последующие вызовы `Render()` возвращают `lastRender`
+Включает/выключает синхронизированный вывод. При выходе из sync запоминает текущий кадр; при входе кэш сбрасывается только если он не был собран.
 
 ### Утилитарные функции
 
-#### `resize(rows, cols int)`
+#### `markDirty()`
 
-Внутренняя функция изменения размера экрана:
-
-- Создаёт новую сетку ячеек
-- Копирует существующий контент
-- Сбрасывает `scrollTop`, `scrollBottom`
-- Очищает кэш рендеринга
-
-#### `LineText(row int) string`
-
-Возвращает plain text строки экрана (без trailing пробелов).
-
-Используется для захвата командной строки перед отправкой Enter в PTY.
+Сбрасывает `renderDirty`, чтобы следующий `Render()` пересобрал кадр.
 
 ## Реализация стилей
 

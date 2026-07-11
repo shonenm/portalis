@@ -11,12 +11,16 @@ import (
 
 // Parser parses ANSI escape sequences and updates a Screen.
 type Parser struct {
-	screen    *Screen
-	state     ansiState
-	buf       strings.Builder
-	utf8Buf   []byte
-	onCWD     func(string)
-	lastCWD   string
+	screen             *Screen
+	state              ansiState
+	buf                strings.Builder
+	utf8Buf            []byte
+	onCWD              func(string)
+	lastCWD            string
+	escapeIntermediate byte
+	g0LineDrawing      bool
+	g1LineDrawing      bool
+	useG1              bool
 }
 
 type ansiState int
@@ -24,6 +28,7 @@ type ansiState int
 const (
 	stateNormal ansiState = iota
 	stateEscape
+	stateEscapeIntermediate
 	stateCSI
 	stateOSC
 	statePaste
@@ -58,6 +63,9 @@ func utf8Valid(buf []byte) bool {
 
 // Feed feeds data into the parser.
 func (p *Parser) Feed(data []byte) {
+	if len(data) > 0 {
+		defer p.screen.markDirty()
+	}
 	for _, b := range data {
 		p.feedByte(b)
 	}
@@ -85,11 +93,7 @@ func (p *Parser) feedByte(b byte) {
 				p.screen.wrapPending = false
 				p.screen.Cursor.Col = 0
 			}
-			p.screen.Cursor.Row++
-			if p.screen.Cursor.Row >= p.screen.Rows {
-				p.screen.ScrollUp()
-				p.screen.Cursor.Row = p.screen.Rows - 1
-			}
+			p.screen.Index()
 			return
 		}
 		if b == '\t' {
@@ -110,6 +114,16 @@ func (p *Parser) feedByte(b byte) {
 			}
 			return
 		}
+		if b == 0x0e {
+			p.flushUtf8()
+			p.useG1 = true
+			return
+		}
+		if b == 0x0f {
+			p.flushUtf8()
+			p.useG1 = false
+			return
+		}
 
 		// Collect UTF-8 multi-byte sequences.
 		if b >= 0x80 {
@@ -125,7 +139,15 @@ func (p *Parser) feedByte(b byte) {
 
 		// ASCII printable characters.
 		if b >= 0x20 && b != 0x7f {
-			p.screen.Put(rune(b))
+			r := rune(b)
+			lineDrawing := p.g0LineDrawing
+			if p.useG1 {
+				lineDrawing = p.g1LineDrawing
+			}
+			if lineDrawing {
+				r = decSpecialGraphic(b)
+			}
+			p.screen.Put(r)
 		}
 
 	case stateEscape:
@@ -139,8 +161,32 @@ func (p *Parser) feedByte(b byte) {
 			p.buf.Reset()
 			return
 		}
-		// Unknown escape, drop
+		switch b {
+		case '7':
+			p.screen.SaveCursor()
+		case '8':
+			p.screen.RestoreCursor()
+		case 'D':
+			p.screen.Index()
+		case 'E':
+			p.screen.NextLine()
+		case 'M':
+			p.screen.ReverseIndex()
+		default:
+			if b >= 0x20 && b <= 0x2f {
+				p.escapeIntermediate = b
+				p.state = stateEscapeIntermediate
+				return
+			}
+		}
 		p.state = stateNormal
+
+	case stateEscapeIntermediate:
+		if b >= 0x30 && b <= 0x7e {
+			p.handleEscapeIntermediate(p.escapeIntermediate, b)
+			p.state = stateNormal
+			p.escapeIntermediate = 0
+		}
 
 	case stateCSI:
 		// Collect until final byte (0x40-0x7e)
@@ -209,8 +255,9 @@ func (p *Parser) handleOSC(payload string) {
 
 // extractOSC7Path extracts an absolute filesystem path from an OSC 7 payload.
 // Supported forms:
-//   file://hostname/path  → /path
-//   /absolute/path        → /absolute/path
+//
+//	file://hostname/path  → /path
+//	/absolute/path        → /absolute/path
 func extractOSC7Path(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "file://") {
@@ -328,9 +375,26 @@ func (p *Parser) handleCSI(seq string) {
 			col = params[0]
 		}
 		p.screen.SetCursor(p.screen.Cursor.Row, col-1)
+	case 'd':
+		row := 1
+		if len(params) > 0 && params[0] > 0 {
+			row = params[0]
+		}
+		p.screen.SetCursor(row-1, p.screen.Cursor.Col)
+	case '@':
+		p.screen.InsertChars(firstParam(params, 1))
+	case 'P':
+		p.screen.DeleteChars(firstParam(params, 1))
+	case 'X':
+		p.screen.EraseChars(firstParam(params, 1))
+	case 'L':
+		p.screen.InsertLines(firstParam(params, 1))
 	case 'M':
-		// Reverse line feed / scroll down
-		p.screen.ScrollUp() // simplified
+		p.screen.DeleteLines(firstParam(params, 1))
+	case 'S':
+		p.screen.ScrollRegionUp(firstParam(params, 1))
+	case 'T':
+		p.screen.ScrollRegionDown(firstParam(params, 1))
 	case 's':
 		// Save cursor (DECSC) — only standard sequences.
 		if !isPrivate {
@@ -354,27 +418,15 @@ func (p *Parser) handleCSI(seq string) {
 		}
 		p.screen.SetScrollRegion(top, bottom)
 	case 'h':
-		// DECSET — set mode
-		if isPrivate && len(params) > 0 {
-			switch params[0] {
-			case 1049:
-				// Alternate screen buffer
-				p.screen.EnterAltScreen()
-			case 2026:
-				// Synchronized output: suppress rendering until disabled.
-				p.screen.SetSync(true)
+		if isPrivate {
+			for _, mode := range params {
+				p.setPrivateMode(mode, true)
 			}
 		}
 	case 'l':
-		// DECRST — reset mode
-		if isPrivate && len(params) > 0 {
-			switch params[0] {
-			case 1049:
-				// Exit alternate screen buffer
-				p.screen.ExitAltScreen()
-			case 2026:
-				// End synchronized output: commit the current frame.
-				p.screen.SetSync(false)
+		if isPrivate {
+			for _, mode := range params {
+				p.setPrivateMode(mode, false)
 			}
 		}
 	case '~':
@@ -388,6 +440,60 @@ func (p *Parser) handleCSI(seq string) {
 			}
 		}
 	}
+}
+
+func (p *Parser) handleEscapeIntermediate(intermediate, final byte) {
+	lineDrawing := final == '0'
+	if final != '0' && final != 'B' {
+		return
+	}
+	switch intermediate {
+	case '(':
+		p.g0LineDrawing = lineDrawing
+	case ')':
+		p.g1LineDrawing = lineDrawing
+	}
+}
+
+func (p *Parser) setPrivateMode(mode int, active bool) {
+	switch mode {
+	case 1:
+		p.screen.applicationCursor = active
+	case 25:
+		p.screen.CursorVisible = active
+	case 1049:
+		if active {
+			p.screen.EnterAltScreen()
+		} else {
+			p.screen.ExitAltScreen()
+		}
+	case 2004:
+		p.screen.bracketedPaste = active
+	case 2026:
+		p.screen.SetSync(active)
+	}
+}
+
+func firstParam(params []int, defaultValue int) int {
+	if len(params) == 0 || params[0] <= 0 {
+		return defaultValue
+	}
+	return params[0]
+}
+
+var decSpecialGraphics = map[byte]rune{
+	'`': '◆', 'a': '▒', 'b': '␉', 'c': '␌', 'd': '␍', 'e': '␊',
+	'f': '°', 'g': '±', 'h': '␤', 'i': '␋', 'j': '┘', 'k': '┐',
+	'l': '┌', 'm': '└', 'n': '┼', 'o': '⎺', 'p': '⎻', 'q': '─',
+	'r': '⎼', 's': '⎽', 't': '├', 'u': '┤', 'v': '┴', 'w': '┬',
+	'x': '│', 'y': '≤', 'z': '≥', '{': 'π', '|': '≠', '}': '£', '~': '·',
+}
+
+func decSpecialGraphic(b byte) rune {
+	if r, ok := decSpecialGraphics[b]; ok {
+		return r
+	}
+	return rune(b)
 }
 
 func parseParams(s string) []int {

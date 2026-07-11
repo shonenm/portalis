@@ -8,12 +8,17 @@ and forwards keyboard, mouse and resize events.
 ## Features
 
 - PTY-backed session via [`creack/pty`](https://github.com/creack/pty)
-- ANSI parser: CSI, OSC, SGR colors (16 / 256 / 24-bit), UTF-8
+- ANSI/VT parser: CSI, OSC, SGR colors (16 / 256 / 24-bit), UTF-8
+- xterm-compatible key encoding (Ctrl/Alt/Shift/F-keys, application cursor mode)
+- DEC modes: `?1` application cursor, `?25` cursor visibility, `?1049` alt screen, `?2004` bracketed paste, `?2026` synchronized output
+- Editing sequences: ICH (`CSI @`), DCH (`CSI P`), ECH (`CSI X`), IL (`CSI L`), DL (`CSI M`), SU (`CSI S`), SD (`CSI T`), VPA (`CSI d`), HPA (`CSI G`)
+- Scroll regions, index/reverse index, DEC Special Graphics charset
 - OSC 7 working-directory tracking with callbacks
 - OSC 52 clipboard integration (macOS, Wayland, X11)
 - Synchronized output (`CSI ? 2026 h/l`)
 - Selection with mouse drag, scrollback up to 10 000 lines
 - Alt screen, bracketed paste, command history
+- Render dirty-cache and PTY output coalescing for performance
 - Framework-agnostic core: feed events, call `View(w, h)` to render
 
 ## Installation
@@ -53,9 +58,9 @@ The host calls `Update(msg)` with `tea.KeyMsg`, `tea.MouseMsg`, `ResizeMsg`,
 | File | Responsibility |
 |---|---|
 | `emulator.go` | Top-level controller. Coordinates Screen, Parser and PTY. |
-| `screen.go` | 2D cell grid, scrollback, selection, rendering. |
-| `ansi.go` | ANSI escape parser (CSI, OSC, SGR, UTF-8). |
-| `pty.go` | PTY spawn / read / write / resize. |
+| `screen.go` | 2D cell grid, scrollback, selection, rendering, dirty cache. |
+| `ansi.go` | ANSI/VT escape parser (CSI, OSC, SGR, UTF-8, DEC modes). |
+| `pty.go` | PTY spawn / read / write / resize / output coalescing. |
 | `clipboard.go` | OSC 52 with platform backends. |
 
 ```
@@ -75,13 +80,14 @@ Project specs live under `specs/` and per-file specs under `code-specs/`:
 - [`code-specs/pty.md`](code-specs/pty.md) — PTY lifecycle
 - [`code-specs/clipboard.md`](code-specs/clipboard.md) — clipboard backends
 
-Rendered HTML documentation: [`docs/en/`](docs/en/).
-
 ## Testing
 
 ```bash
 go test ./...
+go test -race ./...
 ```
+
+Unit tests cover ANSI sequences, screen operations, key encoding, and PTY resize/coalescing. Visual E2E with `tmux` is run via `cuetty-cli` (see `cuetty-artifacts/portalis-tmux/`).
 
 Note: `clipboard_mac_test.go` runs only on macOS; other tests are portable.
 

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/creack/pty"
@@ -28,9 +27,9 @@ type Pty struct {
 	Errors chan error
 	done   chan struct{}
 
-	lastRows    int
-	lastCols    int
-	lastResize  time.Time
+	lastRows int
+	lastCols int
+	setSize  func(*os.File, *pty.Winsize) error
 }
 
 // Spawn starts a new PTY with the given command, arguments and optional environment variables.
@@ -81,19 +80,16 @@ func (p *Pty) Resize(rows, cols int) error {
 	if rows == p.lastRows && cols == p.lastCols {
 		return nil
 	}
-	now := time.Now()
-	if !p.lastResize.IsZero() && now.Sub(p.lastResize) < 50*time.Millisecond {
-		p.lastRows = rows
-		p.lastCols = cols
-		return nil
+
+	setSize := p.setSize
+	if setSize == nil {
+		setSize = pty.Setsize
+	}
+	if err := setSize(p.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
+		return err
 	}
 	p.lastRows = rows
 	p.lastCols = cols
-	p.lastResize = now
-
-	if err := pty.Setsize(p.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
-		return err
-	}
 	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Signal(syscall.SIGWINCH)
 	}
@@ -175,13 +171,24 @@ func SendBytes(p *Pty, data []byte) tea.Cmd {
 	}
 }
 
-// Listen returns a bubbletea command that waits for the next chunk of PTY
-// output or an error and wraps it in a PtyOutputMsg / PtyExitMsg.
+const maxPtyOutputMessageSize = 64 * 1024
+
+// Listen returns a bubbletea command that waits for PTY output. Chunks already
+// queued at that moment are coalesced to avoid one full render per 4 KiB read.
 func (p *Pty) Listen(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case data := <-p.Output:
-			return PtyOutputMsg{SessionID: sessionID, Data: data}
+			combined := append([]byte(nil), data...)
+			for len(combined) < maxPtyOutputMessageSize {
+				select {
+				case chunk := <-p.Output:
+					combined = append(combined, chunk...)
+				default:
+					return PtyOutputMsg{SessionID: sessionID, Data: combined}
+				}
+			}
+			return PtyOutputMsg{SessionID: sessionID, Data: combined}
 		case err := <-p.Errors:
 			return PtyExitMsg{SessionID: sessionID, Err: err}
 		}
