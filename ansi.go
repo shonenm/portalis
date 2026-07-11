@@ -66,8 +66,38 @@ func (p *Parser) Feed(data []byte) {
 	if len(data) > 0 {
 		defer p.screen.markDirty()
 	}
-	for _, b := range data {
+	i := 0
+	for i < len(data) {
+		b := data[i]
+		// Fast path: long runs of printable ASCII in stateNormal with no
+		// active line-drawing set or pending UTF-8 sequence. The common
+		// case for modern shells/programs is straight ASCII text, and
+		// going through feedByte's switch per byte is the main cost.
+		if b >= 0x20 && b <= 0x7e &&
+			p.state == stateNormal &&
+			len(p.utf8Buf) == 0 &&
+			!p.useG1 && !p.g0LineDrawing && !p.g1LineDrawing {
+			// Find the run length.
+			j := i + 1
+			for j < len(data) && data[j] >= 0x20 && data[j] <= 0x7e {
+				j++
+			}
+			// Bulk-write the ASCII run via PutBytes. If the run spans the
+			// end of the row, PutBytes consumes up to the row boundary
+			// and signals wrapPending; the remaining bytes are written on
+			// the next iteration (which will see wrapPending and wrap).
+			for k := i; k < j; {
+				written := p.screen.PutBytes(data[k:j])
+				if written == 0 {
+					break
+				}
+				k += written
+			}
+			i = j
+			continue
+		}
 		p.feedByte(b)
+		i++
 	}
 }
 

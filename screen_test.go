@@ -221,3 +221,64 @@ func (s *Screen) RenderLine(r int) string {
 	}
 	return b.String()
 }
+
+func TestPutBytesBasic(t *testing.T) {
+	s := NewScreen(3, 10)
+	n := s.PutBytes([]byte("hello"))
+	if n != 5 {
+		t.Fatalf("expected 5 consumed, got %d", n)
+	}
+	if got := s.Cells[0][0].Rune; got != 'h' {
+		t.Errorf("cell 0,0 = %q, want 'h'", got)
+	}
+	if got := s.Cells[0][4].Rune; got != 'o' {
+		t.Errorf("cell 0,4 = %q, want 'o'", got)
+	}
+	if s.Cursor.Col != 5 {
+		t.Errorf("cursor col = %d, want 5", s.Cursor.Col)
+	}
+	if s.wrapPending {
+		t.Errorf("wrapPending should be false")
+	}
+}
+
+func TestPutBytesWrapAtRowEnd(t *testing.T) {
+	s := NewScreen(3, 5)
+	n := s.PutBytes([]byte("abcde"))
+	if n != 5 {
+		t.Fatalf("expected 5 consumed, got %d", n)
+	}
+	if !s.wrapPending {
+		t.Fatalf("expected wrapPending after filling row")
+	}
+	if s.Cursor.Col != 4 {
+		t.Errorf("cursor col = %d, want 4 (last column)", s.Cursor.Col)
+	}
+	// Next call should wrap and write on next row.
+	n = s.PutBytes([]byte("X"))
+	if n != 1 {
+		t.Fatalf("expected 1 consumed after wrap, got %d", n)
+	}
+	if s.wrapPending {
+		t.Errorf("wrapPending should clear after wrap")
+	}
+	if got := s.Cells[1][0].Rune; got != 'X' {
+		t.Errorf("cell 1,0 = %q, want 'X'", got)
+	}
+}
+
+func TestPutBytesCapsAtRowBoundary(t *testing.T) {
+	s := NewScreen(3, 5)
+	// Start at col 2.
+	for i := 0; i < 2; i++ {
+		s.Put(rune('a' + byte(i)))
+	}
+	n := s.PutBytes([]byte("cdefgh"))
+	// Only 3 bytes fit (cols 2,3,4). PutBytes caps at row end and returns.
+	if n != 3 {
+		t.Fatalf("expected 3 consumed (row end), got %d", n)
+	}
+	if !s.wrapPending {
+		t.Errorf("expected wrapPending at row end")
+	}
+}

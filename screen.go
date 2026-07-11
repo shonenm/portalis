@@ -358,6 +358,62 @@ func (s *Screen) Put(r rune) {
 	s.Cursor.Col++
 }
 
+// PutBytes bulk-writes printable ASCII bytes to the screen with a single
+// markDirty and a single copy of a pre-built []Cell. It mirrors Put's
+// per-byte semantics (wrap at end of row, cursor advance, wrapPending)
+// but does it in one tight pass instead of N function calls.
+//
+// The caller must guarantee data is all printable ASCII (0x20..0x7e).
+// Returns the number of bytes consumed. Callers that discover a
+// non-printable byte must fall back to Put for that byte.
+func (s *Screen) PutBytes(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
+		return 0
+	}
+	s.markDirty()
+
+	if s.wrapPending {
+		s.wrapPending = false
+		s.Cursor.Col = 0
+		s.Index()
+		if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
+			return 0
+		}
+	}
+
+	col := s.Cursor.Col
+	if col < 0 || col >= s.Cols {
+		return 0
+	}
+
+	// Cap the run at the row boundary, mirroring Put's wrap behavior.
+	remaining := s.Cols - col
+	n := len(data)
+	if n > remaining {
+		n = remaining
+	}
+
+	// Pre-build the cells once, then copy into the row slice.
+	fg, bg, style := s.Cursor.FG, s.Cursor.BG, s.Cursor.Style
+	buf := make([]Cell, n)
+	for k := 0; k < n; k++ {
+		buf[k] = Cell{Rune: rune(data[k]), FG: fg, BG: bg, Style: style}
+	}
+	copy(s.Cells[s.Cursor.Row][col:col+n], buf)
+
+	if col+n == s.Cols {
+		s.wrapPending = true
+		// Cursor stays at Cols-1 (last column) until the next write wraps.
+		s.Cursor.Col = s.Cols - 1
+		return n
+	}
+	s.Cursor.Col = col + n
+	return n
+}
+
 // SetCursor sets the cursor position (1-indexed in ANSI, 0-indexed here).
 func (s *Screen) SetCursor(row, col int) {
 	s.markDirty()
