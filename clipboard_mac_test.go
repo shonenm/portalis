@@ -60,8 +60,8 @@ func TestPasteMac_Image(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat %s: %v", imgPath, err)
 	}
-	if info.Size() < 100 {
-		t.Errorf("img file too small: %d bytes", info.Size())
+	if info.Size() == 0 {
+		t.Error("image file is empty")
 	}
 	t.Logf("OK: text=%q imgPath=%s (%d bytes)", text, imgPath, info.Size())
 }

@@ -1,31 +1,76 @@
 package portalis
 
 import (
+	"bufio"
+	"bytes"
 	"os"
 	"testing"
 
 	creackpty "github.com/creack/pty"
 )
 
-func TestPtyListenCoalescesQueuedOutput(t *testing.T) {
+type traceRecorder struct {
+	bytes.Buffer
+	closed bool
+}
+
+func (r *traceRecorder) Close() error {
+	r.closed = true
+	return nil
+}
+
+func TestPtyReadLoopCopiesRawBytesToTrace(t *testing.T) {
+	const raw = "\x1b[38;2;139;26;26mstatus\x1b[0m"
+	recorder := &traceRecorder{}
+	chunks := &traceRecorder{}
 	p := &Pty{
-		Output: make(chan []byte, 4),
+		reader:         bufio.NewReader(bytes.NewBufferString(raw)),
+		rawTrace:       recorder,
+		rawTraceChunks: chunks,
+		Output:         make(chan []byte, 1),
+		Errors:         make(chan error, 1),
+		done:           make(chan struct{}),
+	}
+
+	p.readLoop()
+
+	if got := recorder.String(); got != raw {
+		t.Fatalf("raw trace = %q, want %q", got, raw)
+	}
+	if !recorder.closed {
+		t.Fatal("raw trace was not closed after read loop exit")
+	}
+	if got, want := chunks.String(), "27\n"; got != want {
+		t.Fatalf("chunk trace = %q, want %q", got, want)
+	}
+	if !chunks.closed {
+		t.Fatal("chunk trace was not closed after read loop exit")
+	}
+	if got := string(<-p.Output); got != raw {
+		t.Fatalf("PTY output = %q, want %q", got, raw)
+	}
+}
+
+func TestPtyListenPreservesReadBoundaries(t *testing.T) {
+	p := &Pty{
+		Output: make(chan []byte, 2),
 		Errors: make(chan error, 1),
 	}
 	p.Output <- []byte("tmux")
-	p.Output <- []byte("-")
 	p.Output <- []byte("frame")
 
-	msg := p.Listen("session")()
-	output, ok := msg.(PtyOutputMsg)
-	if !ok {
-		t.Fatalf("message type = %T, want PtyOutputMsg", msg)
-	}
-	if output.SessionID != "session" {
-		t.Fatalf("session = %q, want session", output.SessionID)
-	}
-	if got := string(output.Data); got != "tmux-frame" {
-		t.Fatalf("coalesced output = %q, want %q", got, "tmux-frame")
+	for _, expected := range []string{"tmux", "frame"} {
+		msg := p.Listen("session")()
+		output, ok := msg.(PtyOutputMsg)
+		if !ok {
+			t.Fatalf("message type = %T, want PtyOutputMsg", msg)
+		}
+		if output.SessionID != "session" {
+			t.Fatalf("session = %q, want session", output.SessionID)
+		}
+		if got := string(output.Data); got != expected {
+			t.Fatalf("PTY output = %q, want %q", got, expected)
+		}
 	}
 }
 

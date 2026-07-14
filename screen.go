@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/rivo/uniseg"
 )
 
 // StyleBits holds text style attributes.
@@ -24,15 +25,17 @@ const (
 
 // Cell is a single character cell on the terminal screen.
 type Cell struct {
-	Rune  rune
-	FG    lipgloss.Color
-	BG    lipgloss.Color
-	Style StyleBits
+	Rune         rune
+	Combining    string
+	FG           lipgloss.Color
+	BG           lipgloss.Color
+	Style        StyleBits
+	Continuation bool
 }
 
-// Empty returns true if the cell has no content.
+// Empty returns true if the cell has no visible content.
 func (c Cell) Empty() bool {
-	return c.Rune == 0 || c.Rune == ' '
+	return !c.Continuation && (c.Rune == 0 || c.Rune == ' ')
 }
 
 // Screen is a 2D grid of cells.
@@ -191,11 +194,16 @@ func (s *Screen) SelectionText() []string {
 		}
 		var b strings.Builder
 		for c := start; c <= end; c++ {
-			rn := s.Cells[r][c].Rune
-			if rn == 0 {
-				rn = ' '
+			cell := s.Cells[r][c]
+			if cell.Continuation {
+				continue
 			}
-			b.WriteRune(rn)
+			if cell.Rune == 0 {
+				b.WriteByte(' ')
+				continue
+			}
+			b.WriteRune(cell.Rune)
+			b.WriteString(cell.Combining)
 		}
 		out = append(out, strings.TrimRight(b.String(), " "))
 	}
@@ -253,6 +261,9 @@ func (s *Screen) resize(rows, cols int) {
 	}
 	s.Rows = rows
 	s.Cols = cols
+	for row := range s.Cells {
+		s.sanitizeWideRow(row)
+	}
 	// Reset scroll region to the full screen on resize; this matches the
 	// behaviour of most terminal emulators and prevents stale margins from
 	// leaving unused blank lines after the terminal grows.
@@ -294,9 +305,7 @@ func (s *Screen) ClearLine() {
 		return
 	}
 	s.markDirty()
-	for c := s.Cursor.Col; c < s.Cols; c++ {
-		s.Cells[s.Cursor.Row][c] = Cell{}
-	}
+	s.clearCellRange(s.Cursor.Row, s.Cursor.Col, s.Cols)
 	s.wrapPending = false
 }
 
@@ -306,9 +315,7 @@ func (s *Screen) ClearLineLeft() {
 		return
 	}
 	s.markDirty()
-	for c := 0; c <= s.Cursor.Col && c < s.Cols; c++ {
-		s.Cells[s.Cursor.Row][c] = Cell{}
-	}
+	s.clearCellRange(s.Cursor.Row, 0, s.Cursor.Col+1)
 	s.wrapPending = false
 }
 
@@ -318,54 +325,306 @@ func (s *Screen) ClearLineAll() {
 		return
 	}
 	s.markDirty()
-	for c := 0; c < s.Cols; c++ {
-		s.Cells[s.Cursor.Row][c] = Cell{}
-	}
+	clear(s.Cells[s.Cursor.Row])
 	s.wrapPending = false
 }
 
-// Put writes a rune at the cursor position and advances the cursor.
-// Implements the standard terminal "pending wrap" behaviour: writing to the
-// last column leaves the cursor at the last column and defers wrapping until
-// the next printable character.
+func (s *Screen) clearCellRange(row, start, end int) {
+	if row < 0 || row >= s.Rows || start >= end {
+		return
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > s.Cols {
+		end = s.Cols
+	}
+	cells := s.Cells[row]
+	if start < len(cells) && cells[start].Continuation && start > 0 {
+		start--
+	}
+	if end < len(cells) && cells[end].Continuation {
+		end++
+	}
+	clear(cells[start:end])
+}
+
+func (s *Screen) clearCellFootprint(row, col int) {
+	if row < 0 || row >= s.Rows || col < 0 || col >= s.Cols {
+		return
+	}
+	cells := s.Cells[row]
+	if cells[col].Continuation {
+		cells[col] = Cell{}
+		if col > 0 {
+			cells[col-1] = Cell{}
+		}
+		return
+	}
+	if col+1 < len(cells) && cells[col+1].Continuation {
+		cells[col+1] = Cell{}
+	}
+	cells[col] = Cell{}
+}
+
+func (s *Screen) sanitizeWideRow(row int) {
+	if row < 0 || row >= len(s.Cells) {
+		return
+	}
+	cells := s.Cells[row]
+	for col := range cells {
+		cell := cells[col]
+		if cell.Continuation {
+			if col == 0 || cells[col-1].Continuation || cellDisplayWidth(cells[col-1]) != 2 {
+				cells[col] = Cell{}
+			}
+			continue
+		}
+		if cell.Rune != 0 && cellDisplayWidth(cell) == 2 {
+			if col+1 >= len(cells) || !cells[col+1].Continuation {
+				cells[col] = Cell{}
+			}
+		}
+	}
+}
+
+func (s *Screen) previousBaseCell() (row, col int, ok bool) {
+	row = s.Cursor.Row
+	col = s.Cursor.Col - 1
+	if s.wrapPending {
+		col = s.Cursor.Col
+	}
+	if row < 0 || row >= s.Rows || col < 0 || col >= s.Cols {
+		return 0, 0, false
+	}
+	if s.Cells[row][col].Continuation {
+		col--
+	}
+	if col < 0 || s.Cells[row][col].Rune == 0 {
+		return 0, 0, false
+	}
+	return row, col, true
+}
+
+func cellText(cell Cell) string {
+	if cell.Rune == 0 {
+		return ""
+	}
+	return string(cell.Rune) + cell.Combining
+}
+
+func cellDisplayWidth(cell Cell) int {
+	if cell.Continuation || cell.Rune == 0 {
+		return 0
+	}
+	w := uniseg.StringWidth(cellText(cell))
+	if w > 2 {
+		w = 2
+	}
+	return w
+}
+
+// isGraphemeExtender reports whether r is a character that extends the previous
+// grapheme cluster (combining mark, ZWJ, variation selector, skin tone modifier, etc.).
+// This is a fast-path lookup for common cases, avoiding uniseg allocation overhead.
+func isGraphemeExtender(r rune) bool {
+	switch {
+	case r == 0x200D: // ZWJ
+		return true
+	case r == 0xFE0F || r == 0xFE0E: // Variation selectors (emoji/text presentation)
+		return true
+	case r >= 0x0300 && r <= 0x036F: // Combining Diacritical Marks
+		return true
+	case r >= 0x1AB0 && r <= 0x1AFF: // Combining Diacritical Marks Extended
+		return true
+	case r >= 0x1DC0 && r <= 0x1DFF: // Combining Diacritical Marks Supplement
+		return true
+	case r >= 0x20D0 && r <= 0x20FF: // Combining Diacritical Marks for Symbols
+		return true
+	case r >= 0xFE20 && r <= 0xFE2F: // Combining Half Marks
+		return true
+	case r >= 0x1F3FB && r <= 0x1F3FF: // Skin tone modifiers
+		return true
+	case r >= 0xE0020 && r <= 0xE007F: // Tag characters (for emoji tag sequences)
+		return true
+	case r == 0x20E3: // Combining Enclosing Keycap
+		return true
+	case r >= 0xFE00 && r <= 0xFE0F: // Variation Selectors (full range)
+		return true
+	default:
+		return false
+	}
+}
+
+// graphemeBreak reports whether there is a grapheme break between prev and r.
+// Like ghostty's graphemeBreak: if false, r continues the same cluster as prev.
+// Uses a fast-path lookup for common extenders, falling back to uniseg for edge cases.
+func graphemeBreak(prev string, r rune) bool {
+	if prev == "" {
+		return true
+	}
+	// Fast path: check common grapheme extenders without uniseg allocation.
+	if isGraphemeExtender(r) {
+		return false
+	}
+	// Slow path: use uniseg for complex cases (flag sequences, regional indicators, etc.).
+	combined := prev + string(r)
+	g := uniseg.NewGraphemes(combined)
+	if !g.Next() {
+		return true
+	}
+	return g.Str() != combined
+}
+
+// graphemeWidthEffect returns the width effect of appending r to prev within a cluster.
+// Like ghostty's graphemeWidthEffect: wide, narrow, no_change, ignore.
+// Returns (oldWidth, newWidth). If oldWidth == newWidth, effect is no_change.
+func graphemeWidthEffect(prev string, r rune) (oldWidth, newWidth int) {
+	oldWidth = uniseg.StringWidth(prev)
+	if oldWidth > 2 {
+		oldWidth = 2
+	}
+	newWidth = uniseg.StringWidth(prev + string(r))
+	if newWidth > 2 {
+		newWidth = 2
+	}
+	return oldWidth, newWidth
+}
+
+func (s *Screen) appendToPreviousCluster(r rune) bool {
+	row, col, ok := s.previousBaseCell()
+	if !ok {
+		return false
+	}
+	cell := &s.Cells[row][col]
+	prev := cellText(*cell)
+
+	// If the previous cell is empty (e.g. continuation cell with Rune==0),
+	// there is no cluster to continue — start a new one.
+	if prev == "" {
+		return false
+	}
+
+	// Ghostty: check grapheme break
+	if graphemeBreak(prev, r) {
+		return false
+	}
+
+	// Ghostty: compute width effect
+	oldWidth, newWidth := graphemeWidthEffect(prev, r)
+	if oldWidth == newWidth {
+		// no_change: just append
+		cell.Combining += string(r)
+		return true
+	}
+
+	// Apply width change before appending so the cell state is consistent
+	// when we adjust the cursor.
+	if oldWidth == 1 && newWidth == 2 {
+		// wide: set continuation cell
+		if col+1 >= s.Cols {
+			// Can't widen at the right edge; ignore
+			return false
+		}
+		s.clearCellFootprint(row, col+1)
+		s.Cells[row][col+1] = Cell{Continuation: true}
+		if s.Cursor.Row == row && !s.wrapPending {
+			if col+2 >= s.Cols {
+				s.Cursor.Col = s.Cols - 1
+				s.wrapPending = true
+			} else {
+				s.Cursor.Col = col + 2
+			}
+		}
+	} else if oldWidth == 2 && newWidth == 1 {
+		// narrow: clear continuation cell (e.g. VS15 on an emoji)
+		if col+1 < s.Cols {
+			s.Cells[row][col+1] = Cell{}
+		}
+		if s.Cursor.Row == row && !s.wrapPending && s.Cursor.Col > col+1 {
+			s.Cursor.Col = col + 1
+		}
+	}
+
+	cell.Combining += string(r)
+	return true
+}
+
+// Put writes a rune at the cursor position and advances the cursor by its
+// terminal cell width. Wide runes occupy a base cell plus a continuation cell;
+// combining runes extend the previous grapheme without moving the cursor.
 func (s *Screen) Put(r rune) {
 	if s.Cursor.Row < 0 || s.Cursor.Row >= s.Rows {
 		return
 	}
 	s.markDirty()
 
-	if s.wrapPending {
+	width := uniseg.StringWidth(string(r))
+	if width <= 0 {
+		// Zero-width (combining): try to append to previous cluster.
+		// Must be called AFTER wrap check so that wrapPending doesn't
+		// confuse previousBaseCell's column calculation.
+		s.appendToPreviousCluster(r)
+		return
+	}
+	if width > 2 {
+		width = 2
+	}
+	if width == 2 && s.Cols < 2 {
+		r = '�'
+		width = 1
+	}
+
+	if s.wrapPending || (width == 2 && s.Cursor.Col == s.Cols-1) {
 		s.wrapPending = false
 		s.Cursor.Col = 0
 		s.Index()
+	}
+
+	// After wrap handling, try to append to previous cluster.
+	// This is safe because wrapPending is now false and cursor is at col 0
+	// (or wherever the wrap left it).
+	if s.Cursor.Col > 0 && s.appendToPreviousCluster(r) {
+		return
 	}
 
 	if s.Cursor.Col < 0 || s.Cursor.Col >= s.Cols {
 		return
 	}
 
-	s.Cells[s.Cursor.Row][s.Cursor.Col] = Cell{
+	row := s.Cursor.Row
+	col := s.Cursor.Col
+	s.clearCellFootprint(row, col)
+	if width == 2 {
+		s.clearCellFootprint(row, col+1)
+	}
+	s.Cells[row][col] = Cell{
 		Rune:  r,
 		FG:    s.Cursor.FG,
 		BG:    s.Cursor.BG,
 		Style: s.Cursor.Style,
 	}
+	if width == 2 {
+		s.Cells[row][col+1] = Cell{Continuation: true}
+	}
 
-	if s.Cursor.Col == s.Cols-1 {
+	nextCol := col + width
+	if nextCol >= s.Cols {
+		s.Cursor.Col = s.Cols - 1
 		s.wrapPending = true
 		return
 	}
-	s.Cursor.Col++
+	s.Cursor.Col = nextCol
 }
 
 // PutBytes bulk-writes printable ASCII bytes to the screen with a single
-// markDirty and a single copy of a pre-built []Cell. It mirrors Put's
-// per-byte semantics (wrap at end of row, cursor advance, wrapPending)
-// but does it in one tight pass instead of N function calls.
+// markDirty and without allocating a temporary slice. It mirrors Put's
+// per-byte semantics (wrap at end of row, cursor advance, wrapPending) but
+// does it in one tight pass instead of N function calls.
 //
 // The caller must guarantee data is all printable ASCII (0x20..0x7e).
-// Returns the number of bytes consumed. Callers that discover a
-// non-printable byte must fall back to Put for that byte.
+// Returns the number of bytes consumed. Callers that discover a non-printable
+// byte must fall back to Put for that byte.
 func (s *Screen) PutBytes(data []byte) int {
 	if len(data) == 0 {
 		return 0
@@ -396,13 +655,23 @@ func (s *Screen) PutBytes(data []byte) int {
 		n = remaining
 	}
 
-	// Pre-build the cells once, then copy into the row slice.
-	fg, bg, style := s.Cursor.FG, s.Cursor.BG, s.Cursor.Style
-	buf := make([]Cell, n)
-	for k := 0; k < n; k++ {
-		buf[k] = Cell{Rune: rune(data[k]), FG: fg, BG: bg, Style: style}
+	row := s.Cursor.Row
+	cells := s.Cells[row]
+
+	// Clear wide-cell footprints intersecting the run boundaries so an ASCII
+	// overwrite cannot leave an orphan base or continuation cell.
+	if cells[col].Continuation && col > 0 {
+		cells[col-1] = Cell{}
 	}
-	copy(s.Cells[s.Cursor.Row][col:col+n], buf)
+	if col+n < s.Cols && cells[col+n].Continuation {
+		cells[col+n] = Cell{}
+	}
+
+	// Fill cells directly without allocating a temporary slice.
+	fg, bg, style := s.Cursor.FG, s.Cursor.BG, s.Cursor.Style
+	for k := 0; k < n; k++ {
+		cells[col+k] = Cell{Rune: rune(data[k]), FG: fg, BG: bg, Style: style}
+	}
 
 	if col+n == s.Cols {
 		s.wrapPending = true
@@ -434,6 +703,36 @@ func (s *Screen) SetCursor(row, col int) {
 	s.wrapPending = false
 }
 
+// CursorUp moves the cursor up n rows.
+func (s *Screen) CursorUp(n int) {
+	s.SetCursor(s.Cursor.Row-n, s.Cursor.Col)
+}
+
+// CursorDown moves the cursor down n rows.
+func (s *Screen) CursorDown(n int) {
+	s.SetCursor(s.Cursor.Row+n, s.Cursor.Col)
+}
+
+// CursorForward moves the cursor right n columns.
+func (s *Screen) CursorForward(n int) {
+	s.SetCursor(s.Cursor.Row, s.Cursor.Col+n)
+}
+
+// CursorBackward moves the cursor left n columns.
+func (s *Screen) CursorBackward(n int) {
+	s.SetCursor(s.Cursor.Row, s.Cursor.Col-n)
+}
+
+// CursorNextLine moves the cursor down n rows and to column 0.
+func (s *Screen) CursorNextLine(n int) {
+	s.SetCursor(s.Cursor.Row+n, 0)
+}
+
+// CursorPrevLine moves the cursor up n rows and to column 0.
+func (s *Screen) CursorPrevLine(n int) {
+	s.SetCursor(s.Cursor.Row-n, 0)
+}
+
 // ScrollUp scrolls the active region up by one line.
 func (s *Screen) ScrollUp() {
 	s.scrollLineUp()
@@ -457,11 +756,16 @@ func (s *Screen) scrollLineUp() {
 		s.selectionActive = false
 	}
 	if top == 0 {
-		line := make([]Cell, s.Cols)
-		copy(line, s.Cells[0])
-		s.scrollback = append(s.scrollback, line)
-		if s.scrollbackLimit > 0 && len(s.scrollback) > s.scrollbackLimit {
-			s.scrollback = s.scrollback[len(s.scrollback)-s.scrollbackLimit:]
+		if s.scrollbackLimit > 0 && len(s.scrollback) >= s.scrollbackLimit {
+			// Reuse the oldest scrollback line to avoid allocating a new slice.
+			line := s.scrollback[0]
+			s.scrollback = s.scrollback[1:]
+			copy(line, s.Cells[0])
+			s.scrollback = append(s.scrollback, line)
+		} else {
+			line := make([]Cell, s.Cols)
+			copy(line, s.Cells[0])
+			s.scrollback = append(s.scrollback, line)
 		}
 	}
 	for r := top + 1; r <= bottom; r++ {
@@ -533,6 +837,7 @@ func (s *Screen) InsertChars(n int) {
 	row := s.Cells[s.Cursor.Row]
 	copy(row[s.Cursor.Col+n:], row[s.Cursor.Col:s.Cols-n])
 	clear(row[s.Cursor.Col : s.Cursor.Col+n])
+	s.sanitizeWideRow(s.Cursor.Row)
 	s.wrapPending = false
 }
 
@@ -543,6 +848,7 @@ func (s *Screen) DeleteChars(n int) {
 	row := s.Cells[s.Cursor.Row]
 	copy(row[s.Cursor.Col:], row[s.Cursor.Col+n:])
 	clear(row[s.Cols-n:])
+	s.sanitizeWideRow(s.Cursor.Row)
 	s.wrapPending = false
 }
 
@@ -550,7 +856,7 @@ func (s *Screen) DeleteChars(n int) {
 func (s *Screen) EraseChars(n int) {
 	s.markDirty()
 	n = normalizedCount(n, s.Cols-s.Cursor.Col)
-	clear(s.Cells[s.Cursor.Row][s.Cursor.Col : s.Cursor.Col+n])
+	s.clearCellRange(s.Cursor.Row, s.Cursor.Col, s.Cursor.Col+n)
 	s.wrapPending = false
 }
 
@@ -685,6 +991,21 @@ func (s *Screen) SetScrollRegion(top, bottom int) {
 	s.SetCursor(0, 0)
 }
 
+// ScrollTop returns the top of the scroll region (0-indexed).
+func (s *Screen) ScrollTop() int {
+	return s.scrollTop
+}
+
+// ScrollBottom returns the bottom of the scroll region (0-indexed).
+func (s *Screen) ScrollBottom() int {
+	return s.scrollBottom
+}
+
+// ClearWrapPending resets the wrap-pending flag.
+func (s *Screen) ClearWrapPending() {
+	s.wrapPending = false
+}
+
 // ViewOffset returns how many lines the view is scrolled back.
 func (s *Screen) ViewOffset() int {
 	max := len(s.scrollback)
@@ -707,21 +1028,18 @@ func (s *Screen) LineText(row int) string {
 		return ""
 	}
 	var b strings.Builder
-	lastNonSpace := -1
-	for c, cell := range s.Cells[row] {
-		r := cell.Rune
-		if r == 0 {
-			r = ' '
+	for _, cell := range s.Cells[row] {
+		if cell.Continuation {
+			continue
 		}
-		b.WriteRune(r)
-		if r != ' ' {
-			lastNonSpace = c
+		if cell.Rune == 0 {
+			b.WriteByte(' ')
+			continue
 		}
+		b.WriteRune(cell.Rune)
+		b.WriteString(cell.Combining)
 	}
-	if lastNonSpace < 0 {
-		return ""
-	}
-	return b.String()[:lastNonSpace+1]
+	return strings.TrimRight(b.String(), " ")
 }
 
 // ScrollViewUp moves the view up into the scrollback by n lines.
@@ -758,15 +1076,25 @@ func (s *Screen) ResetView() {
 // While synchronized output is active, Render() returns the last committed
 // frame so intermediate redraw states are not visible.
 func (s *Screen) SetSync(active bool) {
-	if active && !s.syncActive && (s.renderDirty || s.lastRender == "") {
-		s.lastRender = s.renderToString()
-		s.renderDirty = false
+	if active {
+		if s.syncActive {
+			return
+		}
+		// Freeze the last frame that View actually rendered. Do not materialize
+		// a new full-screen string inside Parser.Feed for every sync boundary.
+		if s.lastRender == "" {
+			s.lastRender = s.renderToString()
+			s.renderDirty = false
+		}
+		s.syncActive = true
+		return
 	}
-	s.syncActive = active
-	if !active {
-		s.lastRender = s.renderToString()
-		s.renderDirty = false
+	if !s.syncActive {
+		return
 	}
+	// The next View commits the newest logical screen exactly once.
+	s.syncActive = false
+	s.renderDirty = true
 }
 
 func (s *Screen) markDirty() {
@@ -777,10 +1105,14 @@ func (s *Screen) markDirty() {
 // lines are taken from the scrollback buffer; otherwise the live screen is
 // rendered.
 func (s *Screen) Render() string {
-	if s.syncActive {
+	// During synchronized output, show the frozen frame unless the user is
+	// actively selecting text. Selection must remain visible even while the
+	// application is batching output, so we bypass the frozen frame and render
+	// the current state (with selection overlay) in that case.
+	if s.syncActive && !s.selectionActive {
 		return s.lastRender
 	}
-	if !s.renderDirty && s.lastRender != "" {
+	if !s.renderDirty && s.lastRender != "" && !s.selectionActive {
 		return s.lastRender
 	}
 	s.lastRender = s.renderToString()
@@ -839,12 +1171,17 @@ func (s *Screen) renderCells(cells []Cell, cursorRow bool, row int) string {
 		if c < len(cells) {
 			cell = cells[c]
 		}
+		if cell.Continuation {
+			continue
+		}
 		if cell.Rune == 0 {
 			cell.Rune = ' '
 		}
+		text := string(cell.Rune) + cell.Combining
 
 		cursorHere := cursorRow && c == s.Cursor.Col
-		selHere := s.cellInSelection(row, c)
+		selHere := s.cellInSelection(row, c) ||
+			(c+1 < len(cells) && cells[c+1].Continuation && s.cellInSelection(row, c+1))
 
 		if cursorHere || selHere {
 			// Close current style before applying reverse video (cursor
@@ -853,7 +1190,7 @@ func (s *Screen) renderCells(cells []Cell, cursorRow bool, row int) string {
 				b.WriteString("\x1b[0m")
 			}
 			b.WriteString("\x1b[7m")
-			b.WriteRune(cell.Rune)
+			b.WriteString(text)
 			b.WriteString("\x1b[0m")
 			// Re-emit the cell's style for subsequent cells.
 			if cell.FG != "" || cell.BG != "" || cell.Style != 0 {
@@ -876,7 +1213,7 @@ func (s *Screen) renderCells(cells []Cell, cursorRow bool, row int) string {
 			lastBG = cell.BG
 			lastStyle = cell.Style
 		}
-		b.WriteRune(cell.Rune)
+		b.WriteString(text)
 	}
 	// Reset style at end of line
 	if lastFG != "" || lastBG != "" || lastStyle != 0 {

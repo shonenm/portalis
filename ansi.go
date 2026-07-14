@@ -368,37 +368,37 @@ func (p *Parser) handleCSI(seq string) {
 		if len(params) > 0 && params[0] > 0 {
 			n = params[0]
 		}
-		p.screen.SetCursor(p.screen.Cursor.Row-n, p.screen.Cursor.Col)
+		p.screen.CursorUp(n)
 	case 'B':
 		n := 1
 		if len(params) > 0 && params[0] > 0 {
 			n = params[0]
 		}
-		p.screen.SetCursor(p.screen.Cursor.Row+n, p.screen.Cursor.Col)
+		p.screen.CursorDown(n)
 	case 'C':
 		n := 1
 		if len(params) > 0 && params[0] > 0 {
 			n = params[0]
 		}
-		p.screen.SetCursor(p.screen.Cursor.Row, p.screen.Cursor.Col+n)
+		p.screen.CursorForward(n)
 	case 'D':
 		n := 1
 		if len(params) > 0 && params[0] > 0 {
 			n = params[0]
 		}
-		p.screen.SetCursor(p.screen.Cursor.Row, p.screen.Cursor.Col-n)
+		p.screen.CursorBackward(n)
 	case 'E':
 		n := 1
 		if len(params) > 0 && params[0] > 0 {
 			n = params[0]
 		}
-		p.screen.SetCursor(p.screen.Cursor.Row+n, 0)
+		p.screen.CursorNextLine(n)
 	case 'F':
 		n := 1
 		if len(params) > 0 && params[0] > 0 {
 			n = params[0]
 		}
-		p.screen.SetCursor(p.screen.Cursor.Row-n, 0)
+		p.screen.CursorPrevLine(n)
 	case 'G':
 		col := 1
 		if len(params) > 0 && params[0] > 0 {
@@ -550,13 +550,9 @@ func parseParams(s string) []int {
 func (p *Parser) clearFromCursor() {
 	row := p.screen.Cursor.Row
 	col := p.screen.Cursor.Col
-	for c := col; c < p.screen.Cols; c++ {
-		p.screen.Cells[row][c] = Cell{}
-	}
+	p.screen.clearCellRange(row, col, p.screen.Cols)
 	for r := row + 1; r < p.screen.Rows; r++ {
-		for c := 0; c < p.screen.Cols; c++ {
-			p.screen.Cells[r][c] = Cell{}
-		}
+		clear(p.screen.Cells[r])
 	}
 }
 

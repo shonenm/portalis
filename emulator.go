@@ -51,7 +51,8 @@ type Emulator struct {
 	stopped bool
 
 	// cwd is the last reported working directory (via OSC 7).
-	cwd string
+	cwd               string
+	pendingCWDChanges []string
 
 	// commandHistory holds commands entered in this terminal.
 	commandHistory []string
@@ -74,6 +75,10 @@ type Emulator struct {
 
 	mu sync.RWMutex
 }
+
+// RenderTickMsg is kept for compatibility with hosts that may still route
+// queued tick messages from an older emulator instance.
+type RenderTickMsg struct{ SessionID string }
 
 // NewEmulator creates a new terminal emulator for the given session.
 // If command is empty, it tries to find a shell (bash, sh).
@@ -118,24 +123,7 @@ func (e *Emulator) StartSync(extraEnv []string) error {
 		return nil
 	}
 
-	// Reset stopped state so the view renders the terminal again.
-	e.stopped = false
-
-	e.screen = NewScreen(24, 80)
-	if e.scrollbackLimit != 0 {
-		e.screen.SetScrollbackLimit(e.scrollbackLimit)
-	}
-	e.parser = NewParser(e.screen)
-	e.parser.SetCWDCallback(func(path string) {
-		e.mu.Lock()
-		if path != e.cwd {
-			e.cwd = path
-			if e.OnCWDChange != nil {
-				e.OnCWDChange(path)
-			}
-		}
-		e.mu.Unlock()
-	})
+	e.resetTerminalLocked()
 
 	pty, err := e.spawnPty(extraEnv)
 	if err != nil {
@@ -159,24 +147,7 @@ func (e *Emulator) StartWithEnv(extraEnv []string) tea.Cmd {
 			return PtyReadyMsg{SessionID: e.SessionID, AlreadyRunning: true}
 		}
 
-		// Reset stopped state so the view renders the terminal again.
-		e.stopped = false
-
-		e.screen = NewScreen(24, 80)
-		if e.scrollbackLimit != 0 {
-			e.screen.SetScrollbackLimit(e.scrollbackLimit)
-		}
-		e.parser = NewParser(e.screen)
-		e.parser.SetCWDCallback(func(path string) {
-			e.mu.Lock()
-			if path != e.cwd {
-				e.cwd = path
-				if e.OnCWDChange != nil {
-					e.OnCWDChange(path)
-				}
-			}
-			e.mu.Unlock()
-		})
+		e.resetTerminalLocked()
 
 		pty, err := e.spawnPty(extraEnv)
 		if err != nil {
@@ -189,6 +160,23 @@ func (e *Emulator) StartWithEnv(extraEnv []string) tea.Cmd {
 		}
 		return PtyReadyMsg{SessionID: e.SessionID}
 	}
+}
+
+func (e *Emulator) resetTerminalLocked() {
+	e.stopped = false
+	e.pendingCWDChanges = nil
+	e.screen = NewScreen(24, 80)
+	if e.scrollbackLimit != 0 {
+		e.screen.SetScrollbackLimit(e.scrollbackLimit)
+	}
+	e.parser = NewParser(e.screen)
+	e.parser.SetCWDCallback(func(path string) {
+		if path == e.cwd {
+			return
+		}
+		e.cwd = path
+		e.pendingCWDChanges = append(e.pendingCWDChanges, path)
+	})
 }
 
 func (e *Emulator) spawnPty(extraEnv []string) (*Pty, error) {
@@ -290,21 +278,27 @@ func (e *Emulator) Update(msg tea.Msg) tea.Cmd {
 		if msg.SessionID != e.SessionID {
 			return nil
 		}
-		// Feed the parser without holding the mutex: the parser callback may
-		// call back into emulator methods that also take the mutex.
 		e.mu.Lock()
 		parser := e.parser
-		e.mu.Unlock()
-		if parser != nil {
+		if parser != nil && len(msg.Data) > 0 {
+			// Feed one ordered 4 KiB PTY read immediately. Small bounded parser
+			// calls keep input and rendering responsive under sustained output.
+			// Full lock ensures View() doesn't read a half-updated screen.
 			parser.Feed(msg.Data)
 		}
-		// Do not reset the scrollback view here: the user may be reading
-		// history while new output arrives. The view is reset on the next
-		// keystroke instead (see handleKey).
-		// Continue listening
-		if e.pty != nil {
-			return e.Listen()
+		cwdChanges := append([]string(nil), e.pendingCWDChanges...)
+		e.pendingCWDChanges = nil
+		onCWDChange := e.OnCWDChange
+		e.mu.Unlock()
+		if onCWDChange != nil {
+			for _, path := range cwdChanges {
+				onCWDChange(path)
+			}
 		}
+		return e.Listen()
+	case RenderTickMsg:
+		// Legacy tick messages are intentionally ignored. They must not start a
+		// second PTY listener or delay current output.
 		return nil
 	case PtyExitMsg:
 		if msg.SessionID != e.SessionID {
@@ -432,7 +426,7 @@ func (e *Emulator) handleMouse(msg tea.MouseMsg) tea.Cmd {
 				if dy < 0 {
 					dy = -dy
 				}
-				if dx > 1 || dy > 1 {
+				if dx > 0 || dy > 0 {
 					e.screen.StartSelection(e.pressY, e.pressX)
 					e.dragSelecting = true
 				}
@@ -569,6 +563,17 @@ func (e *Emulator) SetInitialCWD(dir string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.initialCWD = dir
+}
+
+// CWD returns the current working directory of the PTY process.
+// Falls back to InitialCWD if the PTY hasn't reported OSC 7 yet.
+func (e *Emulator) CWD() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cwd != "" {
+		return e.cwd
+	}
+	return e.initialCWD
 }
 
 // SetCommandHistory restores a previously saved command history.

@@ -20,12 +20,14 @@ func debugLog(format string, args ...interface{}) {
 
 // Pty wraps a pseudoterminal and forwards output to a channel.
 type Pty struct {
-	cmd    *exec.Cmd
-	ptmx   *os.File
-	reader *bufio.Reader
-	Output chan []byte
-	Errors chan error
-	done   chan struct{}
+	cmd            *exec.Cmd
+	ptmx           *os.File
+	reader         *bufio.Reader
+	rawTrace       io.WriteCloser
+	rawTraceChunks io.WriteCloser
+	Output         chan []byte
+	Errors         chan error
+	done           chan struct{}
 
 	lastRows int
 	lastCols int
@@ -57,6 +59,15 @@ func SpawnInDir(command string, args []string, dir string, env ...string) (*Pty,
 		Output: make(chan []byte, 64),
 		Errors: make(chan error, 1),
 		done:   make(chan struct{}),
+	}
+	if traceBase := os.Getenv("PORTALIS_RAW_TRACE"); traceBase != "" {
+		tracePath := fmt.Sprintf("%s.%d", traceBase, cmd.Process.Pid)
+		if trace, traceErr := os.OpenFile(tracePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); traceErr == nil {
+			p.rawTrace = trace
+			if chunks, chunksErr := os.OpenFile(tracePath+".chunks", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); chunksErr == nil {
+				p.rawTraceChunks = chunks
+			}
+		}
 	}
 
 	go p.readLoop()
@@ -112,6 +123,12 @@ func (p *Pty) Close() error {
 func (p *Pty) readLoop() {
 	buf := make([]byte, 4096)
 	defer close(p.Errors)
+	if p.rawTrace != nil {
+		defer p.rawTrace.Close()
+	}
+	if p.rawTraceChunks != nil {
+		defer p.rawTraceChunks.Close()
+	}
 	for {
 		select {
 		case <-p.done:
@@ -123,6 +140,12 @@ func (p *Pty) readLoop() {
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
+			if p.rawTrace != nil {
+				_, _ = p.rawTrace.Write(data)
+			}
+			if p.rawTraceChunks != nil {
+				_, _ = fmt.Fprintf(p.rawTraceChunks, "%d\n", len(data))
+			}
 
 			if bytes.Contains(data, []byte("\x1b[6n")) {
 				p.ptmx.Write([]byte("\x1b[1;1R"))
@@ -171,24 +194,14 @@ func SendBytes(p *Pty, data []byte) tea.Cmd {
 	}
 }
 
-const maxPtyOutputMessageSize = 64 * 1024
-
-// Listen returns a bubbletea command that waits for PTY output. Chunks already
-// queued at that moment are coalesced to avoid one full render per 4 KiB read.
+// Listen returns a bubbletea command that waits for one ordered PTY read.
+// readLoop already limits reads to 4 KiB; keeping that boundary prevents a
+// 64 KiB Parser.Feed call from blocking the UI update loop.
 func (p *Pty) Listen(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case data := <-p.Output:
-			combined := append([]byte(nil), data...)
-			for len(combined) < maxPtyOutputMessageSize {
-				select {
-				case chunk := <-p.Output:
-					combined = append(combined, chunk...)
-				default:
-					return PtyOutputMsg{SessionID: sessionID, Data: combined}
-				}
-			}
-			return PtyOutputMsg{SessionID: sessionID, Data: combined}
+			return PtyOutputMsg{SessionID: sessionID, Data: data}
 		case err := <-p.Errors:
 			return PtyExitMsg{SessionID: sessionID, Err: err}
 		}
