@@ -29,6 +29,67 @@ func TestLegacyRenderTickDoesNotStartListener(t *testing.T) {
 	}
 }
 
+func TestListenAllowsOnlyOnePendingReader(t *testing.T) {
+	output := make(chan []byte, 2)
+	emulator := NewEmulator("session", "Session", "/bin/sh", nil)
+	emulator.pty = &Pty{
+		Output: output,
+		Errors: make(chan error, 1),
+	}
+
+	first := emulator.Listen()
+	if first == nil {
+		t.Fatal("first Listen returned nil")
+	}
+	if second := emulator.Listen(); second != nil {
+		t.Fatal("second Listen returned a command while the first reader was pending")
+	}
+
+	output <- []byte("first")
+	message, ok := first().(PtyOutputMsg)
+	if !ok {
+		t.Fatalf("first Listen message type = %T, want PtyOutputMsg", message)
+	}
+	if string(message.Data) != "first" {
+		t.Fatalf("first chunk = %q, want %q", message.Data, "first")
+	}
+
+	third := emulator.Listen()
+	if third == nil {
+		t.Fatal("Listen did not become available after the first reader completed")
+	}
+	output <- []byte("second")
+	message, ok = third().(PtyOutputMsg)
+	if !ok {
+		t.Fatalf("third Listen message type = %T, want PtyOutputMsg", message)
+	}
+	if string(message.Data) != "second" {
+		t.Fatalf("second chunk = %q, want %q", message.Data, "second")
+	}
+}
+
+func TestAlreadyRunningReadyDoesNotStartListener(t *testing.T) {
+	output := make(chan []byte, 1)
+	emulator := NewEmulator("session", "Session", "/bin/sh", nil)
+	emulator.pty = &Pty{
+		Output: output,
+		Errors: make(chan error, 1),
+	}
+
+	first := emulator.Listen()
+	if first == nil {
+		t.Fatal("first Listen returned nil")
+	}
+	if command := emulator.Update(PtyReadyMsg{SessionID: "session", AlreadyRunning: true}); command != nil {
+		t.Fatal("AlreadyRunning ready message started a second listener")
+	}
+
+	output <- []byte("output")
+	if _, ok := first().(PtyOutputMsg); !ok {
+		t.Fatal("existing listener did not receive PTY output")
+	}
+}
+
 func TestPtyOutputOSC7DoesNotDeadlock(t *testing.T) {
 	emulator := NewEmulator("session", "Session", "/bin/sh", nil)
 	emulator.mu.Lock()

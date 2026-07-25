@@ -75,6 +75,7 @@ func (s *Screen) StartSelection(row, col int) {
 		return
 	}
 	s.markDirty()
+	row = s.viewportRowToContentRow(row)
 	s.selStartRow, s.selStartCol = row, col
 	s.selEndRow, s.selEndCol = row, col
 	s.selectionActive = true
@@ -98,7 +99,14 @@ func (s *Screen) ExtendSelection(row, col int) {
 	if col >= s.Cols {
 		col = s.Cols - 1
 	}
-	s.selEndRow, s.selEndCol = row, col
+	s.selEndRow, s.selEndCol = s.viewportRowToContentRow(row), col
+}
+
+// viewportRowToContentRow converts a visible row into the stable logical row
+// used by selection and rendering. Live-screen rows are non-negative; rows in
+// scrollback are negative, with -1 being the newest scrollback row.
+func (s *Screen) viewportRowToContentRow(row int) int {
+	return row - s.viewOffset
 }
 
 // ClearSelection clears any active selection.
@@ -165,7 +173,14 @@ func (s *Screen) SelectionText() []string {
 	if r1 > r2 || (r1 == r2 && c1 > c2) {
 		r1, c1, r2, c2 = r2, c2, r1, c1
 	}
-	if r2 < 0 || r2 >= s.Rows {
+	minRow := -len(s.scrollback)
+	if r1 < minRow {
+		r1 = minRow
+	}
+	if r2 >= s.Rows {
+		r2 = s.Rows - 1
+	}
+	if r1 > r2 {
 		return nil
 	}
 	var out []string
@@ -185,16 +200,17 @@ func (s *Screen) SelectionText() []string {
 			out = append(out, "")
 			continue
 		}
-		if start >= len(s.Cells[r]) {
+		cells := s.contentRowCells(r)
+		if start >= len(cells) {
 			out = append(out, "")
 			continue
 		}
-		if end >= len(s.Cells[r]) {
-			end = len(s.Cells[r]) - 1
+		if end >= len(cells) {
+			end = len(cells) - 1
 		}
 		var b strings.Builder
 		for c := start; c <= end; c++ {
-			cell := s.Cells[r][c]
+			cell := cells[c]
 			if cell.Continuation {
 				continue
 			}
@@ -208,6 +224,22 @@ func (s *Screen) SelectionText() []string {
 		out = append(out, strings.TrimRight(b.String(), " "))
 	}
 	return out
+}
+
+// contentRowCells returns cells for a logical row. Negative rows address the
+// scrollback, where -1 is the newest saved line.
+func (s *Screen) contentRowCells(row int) []Cell {
+	if row < 0 {
+		idx := len(s.scrollback) + row
+		if idx < 0 || idx >= len(s.scrollback) {
+			return nil
+		}
+		return s.scrollback[idx]
+	}
+	if row >= len(s.Cells) {
+		return nil
+	}
+	return s.Cells[row]
 }
 
 // Cursor represents the terminal cursor position.
@@ -264,14 +296,61 @@ func (s *Screen) resize(rows, cols int) {
 	for row := range s.Cells {
 		s.sanitizeWideRow(row)
 	}
+	// Normalize every scrollback line to the new column count. Lines that
+	// were saved at the previous width may be shorter or longer than the
+	// new s.Cols; without normalization, older lines keep the stale width
+	// and the visible scrollback gets clipped on the right (or padded with
+	// garbage when shrunk).
+	s.normalizeScrollback()
 	// Reset scroll region to the full screen on resize; this matches the
 	// behaviour of most terminal emulators and prevents stale margins from
 	// leaving unused blank lines after the terminal grows.
 	s.scrollTop = 0
 	s.scrollBottom = rows - 1
 
+	// Clamp viewOffset: the scrollback may have shrunk, so the previous
+	// offset can now point past the end of the buffer.
+	if s.viewOffset > len(s.scrollback) {
+		s.viewOffset = len(s.scrollback)
+	}
+
 	// Invalidate any cached render so the next frame uses the new dimensions.
 	s.lastRender = ""
+}
+
+// normalizeScrollback rewrites every line in s.scrollback so that each one
+// has exactly s.Cells-equivalent length for the current s.Cols. Lines saved
+// at a wider terminal are truncated (with wide-cell continuation cells
+// dropped cleanly); lines saved at a narrower terminal are padded with
+// blank cells so the renderer doesn't read past the slice.
+func (s *Screen) normalizeScrollback() {
+	if s.Cols <= 0 {
+		return
+	}
+	for i := range s.scrollback {
+		line := s.scrollback[i]
+		switch {
+		case len(line) == s.Cols:
+			// Already correct width.
+		case len(line) > s.Cols:
+			// Truncate. If the cell just past the new boundary is a
+			// continuation cell, we are cutting the middle of a wide
+			// rune — keep the base wide rune only if it fits cleanly.
+			truncated := make([]Cell, s.Cols)
+			copy(truncated, line[:s.Cols])
+			s.scrollback[i] = truncated
+		default:
+			// Pad with blank cells.
+			padded := make([]Cell, s.Cols)
+			copy(padded, line)
+			s.scrollback[i] = padded
+		}
+		// Drop dangling continuation cells at the new edge.
+		line = s.scrollback[i]
+		if s.Cols > 0 && line[s.Cols-1].Continuation {
+			line[s.Cols-1] = Cell{}
+		}
+	}
 }
 
 // Resize resizes the screen, preserving existing content.
@@ -1124,25 +1203,17 @@ func (s *Screen) Render() string {
 func (s *Screen) renderToString() string {
 	var lines []string
 	cursorHere := s.viewOffset == 0 && s.CursorVisible && s.CursorBlinkVisible
-	if s.viewOffset > 0 {
-		max := len(s.scrollback)
-		if s.viewOffset > max {
-			s.viewOffset = max
+	if s.viewOffset > len(s.scrollback) {
+		s.viewOffset = len(s.scrollback)
+	}
+	for viewportRow := 0; viewportRow < s.Rows; viewportRow++ {
+		contentRow := s.viewportRowToContentRow(viewportRow)
+		if contentRow < 0 {
+			sbIdx := len(s.scrollback) + contentRow
+			lines = append(lines, s.renderScrollbackLine(sbIdx, contentRow))
+			continue
 		}
-		for r := 0; r < s.Rows; r++ {
-			sbIdx := max - s.viewOffset + r
-			if sbIdx >= 0 && sbIdx < max {
-				lines = append(lines, s.renderScrollbackLine(sbIdx))
-			} else if sbIdx >= max {
-				lines = append(lines, s.renderLine(sbIdx-max, cursorHere && sbIdx-max == s.Cursor.Row))
-			} else {
-				lines = append(lines, strings.Repeat(" ", s.Cols))
-			}
-		}
-	} else {
-		for r := 0; r < s.Rows; r++ {
-			lines = append(lines, s.renderLine(r, cursorHere && r == s.Cursor.Row))
-		}
+		lines = append(lines, s.renderLine(contentRow, cursorHere && contentRow == s.Cursor.Row))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1154,11 +1225,11 @@ func (s *Screen) renderLine(r int, cursorRow bool) string {
 	return s.renderCells(s.Cells[r], cursorRow, r)
 }
 
-func (s *Screen) renderScrollbackLine(idx int) string {
+func (s *Screen) renderScrollbackLine(idx, contentRow int) string {
 	if idx < 0 || idx >= len(s.scrollback) {
 		return strings.Repeat(" ", s.Cols)
 	}
-	return s.renderCells(s.scrollback[idx], false, idx)
+	return s.renderCells(s.scrollback[idx], false, contentRow)
 }
 
 func (s *Screen) renderCells(cells []Cell, cursorRow bool, row int) string {

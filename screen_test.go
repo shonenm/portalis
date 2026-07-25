@@ -46,6 +46,62 @@ func TestSelectionSingleLine(t *testing.T) {
 	}
 }
 
+func TestSelectionUsesScrollbackViewportOffset(t *testing.T) {
+	s := NewScreen(3, 8)
+	s.scrollback = [][]Cell{
+		cellsFromText("oldest", s.Cols),
+		cellsFromText("newest", s.Cols),
+	}
+	s.Cells[0] = cellsFromText("current", s.Cols)
+	s.ScrollViewUp(2)
+
+	// The first visible row is the oldest scrollback line. Mouse coordinates
+	// are viewport coordinates and must be converted before storing selection.
+	s.StartSelection(0, 1)
+	s.ExtendSelection(0, 3)
+	text := s.SelectionText()
+	if len(text) != 1 || text[0] != "lde" {
+		t.Fatalf("expected scrollback selection [lde], got %v", text)
+	}
+
+	lines := strings.Split(s.Render(), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected three rendered rows, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "\x1b[7m") {
+		t.Fatalf("expected selection highlight on the first visible scrollback row, got %q", lines[0])
+	}
+	if strings.Contains(lines[1], "\x1b[7m") || strings.Contains(lines[2], "\x1b[7m") {
+		t.Fatalf("selection leaked to another visible row: %q", lines)
+	}
+}
+
+func TestSelectionCanCrossScrollbackAndLiveScreen(t *testing.T) {
+	s := NewScreen(3, 8)
+	s.scrollback = [][]Cell{cellsFromText("before", s.Cols)}
+	s.Cells[0] = cellsFromText("after", s.Cols)
+	s.ScrollViewUp(1)
+
+	s.StartSelection(0, 2)
+	s.ExtendSelection(1, 2)
+	text := s.SelectionText()
+	want := []string{"fore", "aft"}
+	if len(text) != len(want) || text[0] != want[0] || text[1] != want[1] {
+		t.Fatalf("expected selection %v across scrollback and live screen, got %v", want, text)
+	}
+}
+
+func cellsFromText(text string, width int) []Cell {
+	cells := make([]Cell, width)
+	for i, r := range text {
+		if i >= width {
+			break
+		}
+		cells[i] = Cell{Rune: r}
+	}
+	return cells
+}
+
 func TestSelectionMultiLine(t *testing.T) {
 	s := NewScreen(3, 10)
 	for r := 0; r < s.Rows; r++ {
@@ -125,6 +181,139 @@ func TestResizeUpResetsScrollRegion(t *testing.T) {
 
 	if s.scrollTop != 0 || s.scrollBottom != 9 {
 		t.Errorf("scroll region not reset after resize: %d-%d", s.scrollTop, s.scrollBottom)
+	}
+}
+
+// TestResizeShrinkTruncatesScrollback verifies that scrollback lines saved at
+// the previous width are truncated to the new column count instead of keeping
+// their original width (which would visually clip the right side after the
+// terminal is narrowed).
+func TestResizeShrinkTruncatesScrollback(t *testing.T) {
+	s := NewScreen(3, 20)
+	// Fill the first line so that the next Newline scrolls it into scrollback.
+	for c := 0; c < s.Cols; c++ {
+		s.Put('A')
+	}
+	s.NextLine()
+	// One more line, also scrolled off.
+	for c := 0; c < s.Cols; c++ {
+		s.Put('B')
+	}
+	s.NextLine()
+	s.ScrollRegionUp(1)
+	s.ScrollRegionUp(1)
+	if len(s.scrollback) != 2 {
+		t.Fatalf("expected 2 scrollback lines, got %d", len(s.scrollback))
+	}
+	if len(s.scrollback[0]) != 20 {
+		t.Fatalf("scrollback line width before resize: got %d, want 20", len(s.scrollback[0]))
+	}
+
+	s.Resize(3, 8)
+
+	if len(s.scrollback) != 2 {
+		t.Fatalf("scrollback lost lines after resize: got %d", len(s.scrollback))
+	}
+	for i, line := range s.scrollback {
+		if len(line) != 8 {
+			t.Errorf("scrollback line %d width after shrink: got %d, want 8", i, len(line))
+		}
+	}
+}
+
+// TestResizeGrowPadsScrollback verifies that scrollback lines saved at a
+// narrower width are padded with blank cells so the renderer can index up to
+// s.Cols without reading past the slice.
+func TestResizeGrowPadsScrollback(t *testing.T) {
+	s := NewScreen(3, 5)
+	for c := 0; c < s.Cols; c++ {
+		s.Put('X')
+	}
+	s.NextLine()
+	s.ScrollRegionUp(1)
+	if len(s.scrollback) != 1 || len(s.scrollback[0]) != 5 {
+		t.Fatalf("expected one 5-wide scrollback line, got %d lines of width %d",
+			len(s.scrollback), func() int {
+				if len(s.scrollback) == 0 {
+					return 0
+				}
+				return len(s.scrollback[0])
+			}())
+	}
+
+	s.Resize(3, 12)
+
+	if len(s.scrollback) != 1 {
+		t.Fatalf("scrollback lost after resize: got %d", len(s.scrollback))
+	}
+	if len(s.scrollback[0]) != 12 {
+		t.Fatalf("scrollback line width after grow: got %d, want 12", len(s.scrollback[0]))
+	}
+	// Original content must be preserved on the left.
+	for c := 0; c < 5; c++ {
+		if s.scrollback[0][c].Rune != 'X' {
+			t.Errorf("cell %d lost content after grow: got %q", c, s.scrollback[0][c].Rune)
+		}
+	}
+	// Padding must be blank cells, not garbage.
+	for c := 5; c < 12; c++ {
+		if s.scrollback[0][c].Rune != 0 {
+			t.Errorf("pad cell %d not blank: got %q", c, s.scrollback[0][c].Rune)
+		}
+	}
+}
+
+// TestResizeScrollbackDropsDanglingContinuation ensures that when a scrollback
+// line is truncated right after the base cell of a wide rune, the dangling
+// continuation cell is dropped instead of leaking into the visible output.
+func TestResizeScrollbackDropsDanglingContinuation(t *testing.T) {
+	s := NewScreen(3, 10)
+	// First line: 'A' + emoji '日' (2 cells wide) + filler.
+	s.SetCursor(0, 0)
+	s.Put('A')
+	s.Put('日')
+	for c := 2; c < s.Cols-1; c++ {
+		s.Put('Z')
+	}
+	// Pad the last cell so wrapPending doesn't trigger another newline.
+	s.Put('Y')
+	s.NextLine()
+	s.ScrollRegionUp(1)
+	if len(s.scrollback) != 1 {
+		t.Fatalf("expected 1 scrollback line, got %d", len(s.scrollback))
+	}
+	if len(s.scrollback[0]) != 10 {
+		t.Fatalf("scrollback line width: got %d, want 10", len(s.scrollback[0]))
+	}
+	// Locate the wide rune and its continuation.
+	var wideCol, contCol = -1, -1
+	for c, cell := range s.scrollback[0] {
+		if cell.Rune == '日' && !cell.Continuation {
+			wideCol = c
+		}
+		if cell.Continuation {
+			contCol = c
+		}
+	}
+	if wideCol == -1 || contCol != wideCol+1 {
+		t.Fatalf("expected wide rune at col %d with continuation at %d, got wide=%d cont=%d",
+			wideCol, wideCol+1, wideCol, contCol)
+	}
+
+	// Shrink the width to a value that cuts between the base and the
+	// continuation of the wide rune. Choose cols so wideCol is the last
+	// kept column.
+	s.Resize(3, wideCol+1)
+
+	if len(s.scrollback) != 1 {
+		t.Fatalf("scrollback lost: got %d", len(s.scrollback))
+	}
+	if len(s.scrollback[0]) != wideCol+1 {
+		t.Fatalf("scrollback line width after shrink: got %d, want %d", len(s.scrollback[0]), wideCol+1)
+	}
+	// The last cell must not be a dangling continuation.
+	if s.scrollback[0][wideCol].Continuation {
+		t.Errorf("dangling continuation cell leaked at col %d", wideCol)
 	}
 }
 

@@ -64,8 +64,19 @@ type Emulator struct {
 	// initialCWD is set before Start and used to chdir the PTY process.
 	initialCWD string
 
+	// startEnv holds extra environment variables applied on Start when the
+	// caller does not pass explicit env vars. Set via SetStartEnv before the
+	// process is spawned; this keeps the environment consistent no matter
+	// which Start* variant ends up launching the PTY.
+	startEnv []string
+
 	// scrollbackLimit caps the screen scrollback buffer.
 	scrollbackLimit int
+
+	// listenerPending prevents multiple Bubble Tea commands from reading the
+	// same PTY output channel concurrently.
+	listenerPending    bool
+	listenerGeneration uint64
 
 	// Drag-select state: remember the press position and whether an
 	// actual drag is in progress. Selection starts only when the mouse
@@ -100,6 +111,32 @@ func (e *Emulator) Start() tea.Cmd {
 	return e.StartWithEnv(nil)
 }
 
+// SetStartEnv records extra environment variables to use when the PTY is
+// spawned without explicit env vars (Start, StartWithEnv(nil), StartSync(nil)).
+// Must be called before the process starts; later calls have no effect on an
+// already running PTY.
+func (e *Emulator) SetStartEnv(env []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.startEnv = env
+}
+
+// StartEnv returns the env vars recorded via SetStartEnv (nil when unset).
+func (e *Emulator) StartEnv() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.startEnv
+}
+
+// effectiveEnv resolves the env vars to spawn with: explicit extraEnv wins,
+// otherwise the recorded startEnv is used.
+func (e *Emulator) effectiveEnv(extraEnv []string) []string {
+	if extraEnv != nil {
+		return extraEnv
+	}
+	return e.startEnv
+}
+
 // SetScrollbackLimit sets the maximum number of scrollback lines. Non-positive
 // values disable the limit. Call before Start to take effect; calling after
 // Start updates the existing screen immediately.
@@ -125,7 +162,7 @@ func (e *Emulator) StartSync(extraEnv []string) error {
 
 	e.resetTerminalLocked()
 
-	pty, err := e.spawnPty(extraEnv)
+	pty, err := e.spawnPty(e.effectiveEnv(extraEnv))
 	if err != nil {
 		return err
 	}
@@ -149,7 +186,7 @@ func (e *Emulator) StartWithEnv(extraEnv []string) tea.Cmd {
 
 		e.resetTerminalLocked()
 
-		pty, err := e.spawnPty(extraEnv)
+		pty, err := e.spawnPty(e.effectiveEnv(extraEnv))
 		if err != nil {
 			return PtyExitMsg{SessionID: e.SessionID, Err: err}
 		}
@@ -165,6 +202,8 @@ func (e *Emulator) StartWithEnv(extraEnv []string) tea.Cmd {
 func (e *Emulator) resetTerminalLocked() {
 	e.stopped = false
 	e.pendingCWDChanges = nil
+	e.listenerPending = false
+	e.listenerGeneration++
 	e.screen = NewScreen(24, 80)
 	if e.scrollbackLimit != 0 {
 		e.screen.SetScrollbackLimit(e.scrollbackLimit)
@@ -197,12 +236,29 @@ func (e *Emulator) spawnPty(extraEnv []string) (*Pty, error) {
 	return Spawn(e.cmd, e.args, env...)
 }
 
-// Listen returns a command that waits for PTY output.
+// Listen returns a command that waits for the next PTY output.
+// At most one returned command may be waiting for a given Emulator.
 func (e *Emulator) Listen() tea.Cmd {
-	if e.pty == nil {
+	e.mu.Lock()
+	if e.pty == nil || e.listenerPending {
+		e.mu.Unlock()
 		return nil
 	}
-	return e.pty.Listen(e.SessionID)
+	pty := e.pty
+	generation := e.listenerGeneration
+	e.listenerPending = true
+	e.mu.Unlock()
+
+	return func() tea.Msg {
+		msg := pty.Listen(e.SessionID)()
+
+		e.mu.Lock()
+		if e.listenerGeneration == generation {
+			e.listenerPending = false
+		}
+		e.mu.Unlock()
+		return msg
+	}
 }
 
 // DefaultShell returns a usable login shell, preferring absolute paths so it
@@ -262,7 +318,7 @@ func (e *Emulator) Update(msg tea.Msg) tea.Cmd {
 	case ResizeMsg:
 		return e.handlePanelResize(msg)
 	case PtyReadyMsg:
-		if msg.SessionID != e.SessionID {
+		if msg.SessionID != e.SessionID || msg.AlreadyRunning {
 			return nil
 		}
 		return e.Listen()
@@ -545,6 +601,8 @@ func (e *Emulator) Close() {
 		e.pty.Close()
 		e.pty = nil
 	}
+	e.listenerPending = false
+	e.listenerGeneration++
 }
 
 // Stop terminates the session and switches the panel to the idle ASCII art view.
@@ -555,6 +613,8 @@ func (e *Emulator) Stop() {
 		e.pty.Close()
 		e.pty = nil
 	}
+	e.listenerPending = false
+	e.listenerGeneration++
 	e.stopped = true
 }
 
