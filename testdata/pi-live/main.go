@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Starframe/portalis"
+	"github.com/shonenm/portalis"
 )
 
 const modelName = "home-pc/qwen-3.5-9b"

@@ -9,7 +9,7 @@ import (
 
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/Starframe/portalis/internal/stressfixture"
+	"github.com/shonenm/portalis/internal/stressfixture"
 )
 
 const (

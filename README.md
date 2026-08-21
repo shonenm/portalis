@@ -94,3 +94,19 @@ Note: `clipboard_mac_test.go` runs only on macOS; other tests are portable.
 ## License
 
 MIT (see project root).
+
+---
+
+## About this fork
+
+This is a fork of [starframe-dev/portalis](https://github.com/starframe-dev/portalis).
+
+The only change is the module path. Upstream declares itself as
+`github.com/Starframe/portalis`, which no longer resolves — that repository
+returns 404, so the module cannot be fetched by its own declared path and every
+consumer needs a `replace` directive. A `replace` makes `go install
+example.com/consumer@latest` fail outright, so [live-pr](https://github.com/shonenm/live-pr)
+depends on this fork instead.
+
+No functional changes. If upstream corrects its module path and tags a release,
+this fork becomes unnecessary.

@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Starframe/portalis"
-	"github.com/Starframe/portalis/internal/stressfixture"
+	"github.com/shonenm/portalis"
+	"github.com/shonenm/portalis/internal/stressfixture"
 )
 
 type frameMsg struct{}
